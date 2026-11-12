@@ -121,6 +121,10 @@ pub enum Token {
     If,
     #[token("else")]
     Else,
+    #[token("for")]
+    For,
+    #[token("do")]
+    Do,
     #[token("while")]
     While,
     #[token("int")]
