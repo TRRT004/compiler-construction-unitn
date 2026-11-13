@@ -416,6 +416,7 @@ impl<'a> Parser<'a> {
             Token::If => self.parse_if(),
             Token::While => self.parse_while(),
             Token::Return => self.parse_return(),
+            Token::Do => self.parse_do_while(),
             Token::Var(_) | Token::Int(_) => {
                 // could be assignment or declaration or prcedure call.
                 match self.peek_n(1) {
@@ -600,6 +601,94 @@ impl<'a> Parser<'a> {
             kind,
             span: span_key,
         })
+    }
+
+
+    fn parse_do_while(&mut self) -> PResult<Statement> {
+        let span_key = self.expect(Token::Do)?;
+
+        let span_start = self.expect(Token::LBrace)?;
+        let body_stmts = self.parse_block()?;
+        let span_end = self.expect(Token::RBrace)?;
+
+        // Consume optional semicolon that lexer inserted after closing brace newline
+        if *self.peek() == Token::Semicolon {
+            self.consume();
+        }
+
+        let span_while = self.expect(Token::While)?;
+        let guard = if *self.peek() == Token::LParen {
+            self.consume();
+            let g = self.parse_expression(0)?;
+            self.expect(Token::RParen)?;
+            g
+        } else {
+            self.parse_expression(0)?
+        };
+
+        // Consume the terminating semicolon (explicit or inserted by newline)
+        let span_semi = self.expect(Token::Semicolon)?;
+
+        let flag_name = format!("_do_flag_{}", span_key.start);
+        let flag_decl = Statement {
+            kind: StatementKind::LocalDecl(VarDeclaration {
+                name: flag_name.clone(),
+                init: Some(Expression {
+                    kind: ExpressionKind::Bool(true),
+                    span: span_key.clone(),
+                }),
+                var_type: Type::Bool,
+                dims: Vec::new(),
+                span: span_key.clone(),
+            }),
+            span: span_key.clone(),
+        };
+
+        let inner_body = Statement {
+            kind: StatementKind::Compound(Block { stmts: body_stmts }),
+            span: span_start.merge(&span_end),
+        };
+
+        // Update Flag
+        let flag_lval = LVal::E(Expression {
+            kind: ExpressionKind::Var(flag_name.clone()),
+            span: span_key.clone(),
+        });
+        let flag_update = Statement {
+            kind: StatementKind::Assign {
+                lhs: vec![flag_lval],
+                rhs: vec![guard],
+            },
+            span: span_while.merge(&span_semi),
+        };
+
+        let while_body = Statement {
+            kind: StatementKind::Compound(Block {
+                stmts: vec![inner_body, flag_update],
+            }),
+            span: span_key.clone(),
+        };
+
+        let while_stmt = Statement {
+            kind: StatementKind::While {
+                guard: Expression {
+                    kind: ExpressionKind::Var(flag_name),
+                    span: span_key.clone(),
+                },
+                body: Box::new(while_body),
+            },
+            span: span_key.clone(),
+        };
+
+        // Outer complete block
+        let outer_block = Statement {
+            kind: StatementKind::Compound(Block {
+                stmts: vec![flag_decl, while_stmt],
+            }),
+            span: span_key.merge(&span_semi),
+        };
+
+        Ok(outer_block)
     }
 
     fn parse_if(&mut self) -> PResult<Statement> {
