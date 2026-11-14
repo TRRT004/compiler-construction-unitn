@@ -59,7 +59,7 @@ do {
     }
 }
 ```
-*(where `flag` is a fresh synthetic boolean variable name, e.g., `$do_cond` or similar identifier that cannot collide with user variables).*
+*(where `flag` is a fresh synthetic boolean variable name `_do_flag_<span_start>`, keyed by the byte offset of the `do` keyword so nested or sequential `do`/`while` loops never collide).*
 
 ### Why `flag = <guard>` at the end of the loop (instead of `while (guard | flag)` or body duplication)
 1. **No Eager Evaluation Before Iteration 1:**
@@ -71,3 +71,47 @@ do {
    Even when `<guard>` is initially true, the `while` header block in the CFG has two incoming edges: the entry edge (`flag = true`) and the loop back-edge (`flag = false`). Because Reaching Definitions sees two conflicting definitions of `flag` at the loop header join point, constant propagation cannot fold `flag` away.
 3. **Avoids AST Blowup:**
    Unlike duplicating the body (`{ <body>; while (<guard>) { <body> } }`), using `flag = <guard>` keeps a single copy of `<body>` in the AST, avoiding exponential code duplication when `do`/`while` loops are nested.
+
+---
+
+## 3. Handling Unconditionally Returning Loop Bodies (`StatementType::Void`)
+
+### The Problem
+In ETA's type system (`rwetac/src/typecheck.rs`), statements have control-flow types: `StatementType::Unit` (may fall through) or `StatementType::Void` (always returns). `Typechecker::typecheck_block` enforces that **every statement in a block except the last must have type `Unit`**, rejecting any statement following a `Void` statement as unreachable (`"This statement always returns, so the statements after it are unreachable"`).
+
+Because our desugaring appends `<step>` (for `for`) or `flag = <guard>` (for `do`/`while`) *after* `<body>` inside the `while` block, a user loop whose `<body>` unconditionally returns (e.g. a direct `return ...` or an `if`/`else` where both branches return) gives `<body>` type `Void`. Naively placing `<step>` or `flag = <guard>` after `<body>` would cause `typecheck_block` to fail on valid source programs.
+
+At the same time, we cannot simply drop `<step>` or `flag = <guard>` when `<body>` returns, because `<step>` and `<guard>` must still undergo name resolution and typechecking (e.g., to reject undeclared identifiers or non-`bool` guards).
+
+### The Solution (`stmt_always_returns`)
+In `Parser`, `stmt_always_returns` structurally mirrors the `StatementType::Void` rules of `Typechecker`:
+- `StatementKind::Return(_)` $\rightarrow$ `true`
+- `StatementKind::Compound(block)` $\rightarrow$ `true` if `block.stmts.last()` always returns
+- `StatementKind::If { then_br, else_br: Some(else_br), .. }` $\rightarrow$ `true` if both `then_br` and `else_br` always return
+- Everything else $\rightarrow$ `false`
+
+When `stmt_always_returns(&body)` is `true`, the parser wraps the synthetic trailing statement (`<step>` or `flag = <guard>`) in `if (false) { ... }` (with no `else` branch) and places it **before** `<body>`:
+
+```eta
+while (<guard_or_flag>) {
+    if (false) {
+        <step_or_flag_update>;
+    }
+    {
+        <body> // remains the last statement in the block
+    }
+}
+```
+
+Why this works across all compiler phases:
+1. **Resolution & Scoping:** `<body>` is wrapped in its own inner `Compound` block, so declarations inside `<body>` are never in scope for `<step>` or `<guard>` anyway; placing `if (false) { ... }` before `<body>` resolves against the exact same scope (`<init>` and outer scopes).
+2. **Typechecking:** An `if` without an `else` always has `StatementType::Unit`, so `typecheck_block` checks `<step>` / `flag = <guard>` inside the `then` branch and then allows the `Void` `<body>` as the final statement of the `while` body.
+3. **Runtime & Optimization:** At runtime `if (false)` is never taken, so `<body>` executes immediately on iteration 1 and returns; with `--opt`, constant folding and dead-code elimination remove the dead branch entirely. Note also that doing this discovered a bug in `Cfg::get_region` (`rwetac/src/opt/cfg.rs`) when a loop or outer `if` contained a nested `if`/`else` that returned in both branches, which was fixed by preventing `get_region` from swallowing `self.exit_id`.
+
+---
+
+## 4. Deliverable Examples & Test Organization
+
+All end-to-end `.eta` test programs live in `runtime/tests/integration_tests/` (with `// EXPECT: <value>` headers) so `cargo test --workspace` compiles and executes each program in Wasmer both unoptimized and with `--opt`.
+
+To keep the 6 deliverable example programs cleanly organized under `A1/` without duplicating files, `A1/examples/` contains relative symbolic links (`ln -s ../../runtime/tests/integration_tests/<test>.eta A1/examples/<name>.eta`) pointing to the corresponding integration test files.

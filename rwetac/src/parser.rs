@@ -618,14 +618,7 @@ impl<'a> Parser<'a> {
         }
 
         let span_while = self.expect(Token::While)?;
-        let guard = if *self.peek() == Token::LParen {
-            self.consume();
-            let g = self.parse_expression(0)?;
-            self.expect(Token::RParen)?;
-            g
-        } else {
-            self.parse_expression(0)?
-        };
+        let guard = self.parse_expression(0)?;
 
         // Consume the terminating semicolon (explicit or inserted by newline)
         let span_semi = self.expect(Token::Semicolon)?;
@@ -733,6 +726,13 @@ impl<'a> Parser<'a> {
         self.expect(Token::Semicolon)?;
 
         let step_lhs = self.parse_lvals()?;
+        if step_lhs.is_empty() {
+            return Err(ParserError::UnexpectedToken(
+                "Expected at least one l-value in for loop step".to_string(),
+                self.peek().clone(),
+                self.peek_span(),
+            ));
+        }
         if let Some(LVal::V(vd)) = step_lhs.iter().find(|l| matches!(l, LVal::V(_))) {
             return Err(ParserError::UnexpectedToken(
                 "Variable declarations are not allowed in for loop step".to_string(),
@@ -741,14 +741,10 @@ impl<'a> Parser<'a> {
             ));
         }
         self.expect(Token::Equal)?;
-        let step_rhs = self.parse_sep_list_comma(Token::LBrace, |p| p.parse_expression(0))?;
-
-        if step_rhs.is_empty() {
-            return Err(ParserError::UnexpectedToken(
-                "Expected at least one expression in for loop step".to_string(),
-                self.peek().clone(),
-                self.peek_span(),
-            ));
+        let mut step_rhs = vec![self.parse_expression(0)?];
+        while *self.peek() == Token::Comma && !self.is_eof() {
+            self.consume();
+            step_rhs.push(self.parse_expression(0)?);
         }
 
         // Consume optional semicolon that lexer inserted after single-line condition
