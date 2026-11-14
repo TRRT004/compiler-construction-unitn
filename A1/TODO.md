@@ -1,6 +1,6 @@
 # Roberto
-- [] Generate 1 program for `for` and `do while`
-- [] Implement the `for` desugaring in `rwetac/src/parser.rs`
+- [x] Generate 1 program for `for` and `do while`
+- [x] Implement the `for` desugaring in `rwetac/src/parser.rs`
 
 # Jacopo
 - [] Generate 1 program for `for` and `do while`

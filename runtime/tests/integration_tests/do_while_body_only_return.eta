@@ -1,0 +1,26 @@
+// EXPECT: 42
+// Tests that a `do`/`while` loop whose body unconditionally returns (type `Void`)
+// does not cause the desugared flag-update statement to fail typechecking as unreachable.
+
+direct_ret() : int {
+    i : int = 0
+    do {
+        return i + 10
+    } while (i < 5)
+    return 0
+}
+
+branch_ret(x : int) : int {
+    do {
+        if (x > 0) {
+            return 32
+        } else {
+            return 99
+        }
+    } while (x < 0)
+    return 0
+}
+
+main() : int {
+    return direct_ret() + branch_ret(1)
+}

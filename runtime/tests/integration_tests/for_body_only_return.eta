@@ -1,0 +1,25 @@
+// EXPECT: 42
+// Tests that a `for` loop whose body unconditionally returns (type `Void`)
+// does not cause the desugared step statement to fail typechecking as unreachable.
+
+direct_ret(n : int) : int {
+    for i: int = 0; i < n; i = i + 1 {
+        return i + 10
+    }
+    return 0
+}
+
+branch_ret(n : int) : int {
+    for i: int = 0; i < n; i = i + 1 {
+        if (i == 0) {
+            return 32
+        } else {
+            return 99
+        }
+    }
+    return 0
+}
+
+main() : int {
+    return direct_ret(5) + branch_ret(5)
+}

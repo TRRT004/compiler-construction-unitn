@@ -417,6 +417,7 @@ impl<'a> Parser<'a> {
             Token::While => self.parse_while(),
             Token::Return => self.parse_return(),
             Token::Do => self.parse_do_while(),
+            Token::For => self.parse_for(),
             Token::Var(_) | Token::Int(_) => {
                 // could be assignment or declaration or prcedure call.
                 match self.peek_n(1) {
@@ -644,9 +645,10 @@ impl<'a> Parser<'a> {
             span: span_key.clone(),
         };
 
+        let inner_span = span_start.merge(&span_end);
         let inner_body = Statement {
             kind: StatementKind::Compound(Block { stmts: body_stmts }),
-            span: span_start.merge(&span_end),
+            span: inner_span.clone(),
         };
 
         // Update Flag
@@ -662,9 +664,30 @@ impl<'a> Parser<'a> {
             span: span_while.merge(&span_semi),
         };
 
+        // If `inner_body` unconditionally returns (type `Void`), placing `flag_update`
+        // after it would fail `typecheck_block` as unreachable. In that case, place
+        // `if (false) { flag_update }` before `inner_body` so the guard is still
+        // resolved and typechecked while `inner_body` remains the final statement.
+        let while_stmts = if Self::stmt_always_returns(&inner_body) {
+            let dead_update = Statement {
+                kind: StatementKind::If {
+                    guard: Expression {
+                        kind: ExpressionKind::Bool(false),
+                        span: span_while.clone(),
+                    },
+                    then_br: Box::new(flag_update),
+                    else_br: None,
+                },
+                span: span_while.merge(&span_semi),
+            };
+            vec![dead_update, inner_body]
+        } else {
+            vec![inner_body, flag_update]
+        };
+
         let while_body = Statement {
             kind: StatementKind::Compound(Block {
-                stmts: vec![inner_body, flag_update],
+                stmts: while_stmts,
             }),
             span: span_key.clone(),
         };
@@ -689,6 +712,132 @@ impl<'a> Parser<'a> {
         };
 
         Ok(outer_block)
+    }
+
+    fn parse_for(&mut self) -> PResult<Statement> {
+        let span_key = self.expect(Token::For)?;
+        
+        let init_tok = self.peek().clone();
+        let init = self.parse_statement()?;
+
+        if !(matches!(init.kind, StatementKind::Assign { .. } | StatementKind::LocalDecl(_))) {
+            return Err(ParserError::UnexpectedToken(
+                "Expected assignment or declaration in for loop initializer".to_string(),
+                init_tok,
+                init.span,
+            ));
+        }
+        
+        let guard = self.parse_expression(0)?;
+
+        self.expect(Token::Semicolon)?;
+
+        let step_lhs = self.parse_lvals()?;
+        if let Some(LVal::V(vd)) = step_lhs.iter().find(|l| matches!(l, LVal::V(_))) {
+            return Err(ParserError::UnexpectedToken(
+                "Variable declarations are not allowed in for loop step".to_string(),
+                Token::Colon,
+                vd.span.clone(),
+            ));
+        }
+        self.expect(Token::Equal)?;
+        let step_rhs = self.parse_sep_list_comma(Token::LBrace, |p| p.parse_expression(0))?;
+
+        if step_rhs.is_empty() {
+            return Err(ParserError::UnexpectedToken(
+                "Expected at least one expression in for loop step".to_string(),
+                self.peek().clone(),
+                self.peek_span(),
+            ));
+        }
+
+        // Consume optional semicolon that lexer inserted after single-line condition
+        if *self.peek() == Token::Semicolon {
+            self.consume();
+        }
+
+        if !(*self.peek() == Token::LBrace) {
+            return Err(ParserError::UnexpectedToken(
+                "Expected '{' after for loop header".to_string(),
+                self.peek().clone(),
+                self.peek_span(),
+            ));
+        }
+
+        let body = self.parse_statement()?;
+        let body_span = body.span.clone();
+
+        let step_span = match (step_lhs.first(), step_rhs.last()) {
+            (Some(first), Some(last)) => first.span().merge(&last.span),
+            _ => span_key.clone(),
+        };
+        let step_stmt = Statement {
+            kind: StatementKind::Assign {
+                lhs: step_lhs,
+                rhs: step_rhs,
+            },
+            span: step_span.clone(),
+        };
+
+        // If `body` unconditionally returns (type `Void`), placing `step_stmt`
+        // after it would fail `typecheck_block` as unreachable. In that case, place
+        // `if (false) { step_stmt }` before `body` so the step is still resolved
+        // and typechecked while `body` remains the final statement.
+        let while_stmts = if Self::stmt_always_returns(&body) {
+            let dead_step = Statement {
+                kind: StatementKind::If {
+                    guard: Expression {
+                        kind: ExpressionKind::Bool(false),
+                        span: step_span.clone(),
+                    },
+                    then_br: Box::new(step_stmt),
+                    else_br: None,
+                },
+                span: step_span.clone(),
+            };
+            vec![dead_step, body]
+        } else {
+            vec![body, step_stmt]
+        };
+
+        let while_body = Statement {
+            kind: StatementKind::Compound(Block {
+                stmts: while_stmts,
+            }),
+            span: body_span.merge(&step_span),
+        };
+
+        let while_stmt = Statement {
+            kind: StatementKind::While {
+                guard,
+                body: Box::new(while_body),
+            },
+            span: span_key.merge(&body_span),
+        };
+
+        let outer_block = Statement {
+            kind: StatementKind::Compound(Block {
+                stmts: vec![init, while_stmt],
+            }),
+            span: span_key.merge(&body_span),
+        };
+
+        Ok(outer_block)
+    }
+
+    fn stmt_always_returns(stmt: &Statement) -> bool {
+        match &stmt.kind {
+            StatementKind::Return(_) => true,
+            StatementKind::Compound(block) => {
+                block.stmts.last().is_some_and(Self::stmt_always_returns)
+            }
+            StatementKind::If {
+                then_br,
+                else_br: Some(else_br),
+                ..
+            } => Self::stmt_always_returns(then_br) && Self::stmt_always_returns(else_br),
+            _ => false,
+        }
     }
 
     fn parse_if(&mut self) -> PResult<Statement> {
