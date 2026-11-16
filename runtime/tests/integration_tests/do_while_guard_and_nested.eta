@@ -1,0 +1,76 @@
+// EXPECT: 66
+// Tests various scenarios for desugared `do`/`while` loops:
+// 1. Executes body at least once even when guard is false initially
+// 2. Guard safety: guard evaluates state modified in body without trapping on initial state
+// 3. Multi-iteration convergence (data-dependent Collatz sequence)
+// 4. Nested `do`/`while` loops with distinct synthetic flag variable scopes
+// 5. Conditional early return with falling-through iterations (type `Unit` body)
+
+test_exec_once_false_guard() : int {
+    x : int = 10
+    do {
+        x = x + 5
+    } while (x < 10)
+    return x
+}
+
+test_guard_safety() : int {
+    // If guard were evaluated eagerly before iteration 1, divisor would be 0,
+    // causing a trap on division by zero. Because desugaring assigns flag = guard
+    // at the end of the body, divisor is incremented to 1 before guard evaluation.
+    divisor : int = 0
+    sum : int = 0
+    do {
+        divisor = divisor + 1
+        sum = sum + divisor
+    } while (12 / divisor > 3)
+    return sum
+}
+
+test_collatz(n : int) : int {
+    steps : int = 0
+    do {
+        if (n % 2 == 0) {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        steps = steps + 1
+    } while (n > 1)
+    return steps
+}
+
+test_nested_do_while() : int {
+    count : int = 0
+    i : int = 0
+    do {
+        j : int = 0
+        do {
+            count = count + 1
+            j = j + 1
+        } while (j < 3)
+        i = i + 1
+    } while (i < 4)
+    return count
+}
+
+test_conditional_early_return(threshold : int) : int {
+    i : int = 0
+    total : int = 0
+    do {
+        i = i + 1
+        total = total + i
+        if (total >= threshold) {
+            return total
+        }
+    } while (i < 100)
+    return total
+}
+
+main() : int {
+    return test_exec_once_false_guard() +
+           test_guard_safety() +
+           test_collatz(6) +
+           test_nested_do_while() +
+           test_conditional_early_return(20)
+}
