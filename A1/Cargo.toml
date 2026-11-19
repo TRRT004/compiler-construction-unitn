@@ -1,0 +1,10 @@
+[package]
+name = "run_examples"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.99"
+rwetac = { path = "../rwetac" }
+wasmer = "6.0.1"

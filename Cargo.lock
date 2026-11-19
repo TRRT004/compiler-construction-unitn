@@ -1549,6 +1549,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "run_examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rwetac",
+ "wasmer",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
