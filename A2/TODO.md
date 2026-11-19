@@ -1,0 +1,21 @@
+# Roberto
+- [] Generate 3 broken programs.
+- [] Do point 2 and 3 of `A2.md`
+- [] Add `diagnostic` type to a new `diagnostics.rs`.
+- [] Edit `parser.rs` to return multiple errors.
+- [] Edit `source_map.rs` to add a few helper functions.
+- [] Edit `resolver.rs` to accumulate errors.
+
+# Jacopo
+- [] Generate 4 broken programs.
+- [] Write the report
+- [] Edit `compile.rs` to print all errors found.
+- [] Edit `compile.rs` to stop compilation if any errors are present.
+
+# Nicola
+- [] Generate 3 broken programs.
+- [] Modify `Symbol table` to allow to attach secondary spans.
+- [] Add `Type::Error` to `types.rs` and `typecheck.rs`.
+- [] Add `Diagnostics` to `typecheck.rs` with secondary spans.
+
+# To assing
