@@ -1,10 +1,10 @@
 # Roberto
+- [] Edit `source_map.rs` to add a few helper functions.
+- [x] Add `diagnostic` type to a new `diagnostic.rs`.
+- [] Edit `parser.rs` to return multiple errors.
+- [] Edit `resolver.rs` to accumulate errors.
 - [] Generate 3 broken programs.
 - [] Do point 2 and 3 of `A2.md`
-- [] Add `diagnostic` type to a new `diagnostics.rs`.
-- [] Edit `parser.rs` to return multiple errors.
-- [] Edit `source_map.rs` to add a few helper functions.
-- [] Edit `resolver.rs` to accumulate errors.
 
 # Jacopo
 - [] Generate 4 broken programs.

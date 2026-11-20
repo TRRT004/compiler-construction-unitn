@@ -6,6 +6,7 @@
 pub mod architecture {}
 pub mod ast;
 pub mod compile;
+pub mod diagnostic;
 pub mod emitter;
 pub mod lexer;
 pub mod opt;
