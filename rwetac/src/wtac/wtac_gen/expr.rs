@@ -77,6 +77,9 @@ impl WtacGen {
             ast::ExpressionKind::Call { name, args } => self.gen_record_lit(name, args),
             ast::ExpressionKind::Subscript(e, e_idx) => self.gen_subscript(e, e_idx),
             ast::ExpressionKind::Dot(e, field) => self.gen_dot(e, field),
+            ast::ExpressionKind::Error => {
+                unreachable!("ExpressionKind::Error must not reach WTAC generation")
+            }
         }
     }
 

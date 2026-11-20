@@ -63,6 +63,8 @@ pub enum ExpressionKind {
     Subscript(Box<Expression>, Box<Expression>),
     /// Field access on a record (e.g. `p.x`).
     Dot(Box<Expression>, String),
+    /// Poison node used for error recovery during parsing and downstream passes.
+    Error,
 }
 
 /// An expression node with source span information.

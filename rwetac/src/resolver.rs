@@ -415,6 +415,7 @@ impl Resolver {
     /// The wildcard identifier `_` is left unchanged.
     pub fn resolve_expr(&mut self, e: &mut Expression) -> ResolveResult {
         match &mut e.kind {
+            ExpressionKind::Error => (),
             ExpressionKind::Var(n) if n == "_" => (),
             ExpressionKind::Var(x) => match self.scope_map.find(x) {
                 Some(entry) => *x = entry.unique_name.clone(),

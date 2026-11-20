@@ -736,6 +736,7 @@ impl Typechecker {
     //#[instrument(skip(self), level = "debug")]
     pub fn typecheck_expression(&mut self, expr: &Expression) -> Result<Type, TypeError> {
         let e = match &expr.kind {
+            ExpressionKind::Error => todo!("Nicola: add Type::Error handling"),
             ExpressionKind::Var(name) => self.symtab.get(name).t.clone(),
             ExpressionKind::Int(_) => Type::Int,
             ExpressionKind::Bool(_) => Type::Bool,
