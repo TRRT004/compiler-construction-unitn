@@ -1,5 +1,5 @@
 # Roberto
-- [] Edit `source_map.rs` to add a few helper functions.
+- [x] Edit `source_map.rs` to add a few helper functions.
 - [x] Add `diagnostic` type to a new `diagnostic.rs`.
 - [] Edit `parser.rs` to return multiple errors.
 - [] Edit `resolver.rs` to accumulate errors.
