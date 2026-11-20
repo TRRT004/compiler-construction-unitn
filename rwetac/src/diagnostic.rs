@@ -47,6 +47,7 @@ impl Label {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
+    pub code: Option<String>,
     pub message: String,
     pub primary: Label,
     pub secondary: Vec<Label>,
@@ -59,6 +60,7 @@ impl Diagnostic {
         let msg = message.into();
         Self {
             severity: Severity::Error,
+            code: None,
             message: msg.clone(),
             primary: Label::new(span, msg),
             secondary: Vec::new(),
@@ -70,6 +72,7 @@ impl Diagnostic {
     pub fn error_with_label(span: Span, message: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
+            code: None,
             message: message.into(),
             primary: Label::new(span, label),
             secondary: Vec::new(),
@@ -82,11 +85,18 @@ impl Diagnostic {
         let msg = message.into();
         Self {
             severity: Severity::Warning,
+            code: None,
             message: msg.clone(),
             primary: Label::new(span, msg),
             secondary: Vec::new(),
             suggestions: Vec::new(),
         }
+    }
+
+    /// Attaches an error code or category (e.g. "E0308", "type", "syntax").
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
 
     /// Attaches a secondary label (context label).
@@ -129,11 +139,18 @@ impl Diagnostic {
             Severity::Warning => yellow_bold,
         };
 
+        let code_suffix = match &self.code {
+            Some(c) => format!("[{}]", c),
+            None => String::new(),
+        };
+
         // Header: e.g. "error: mismatched types in variable initialization"
+        // or with code: "error[E0308]: mismatched types in variable initialization"
         out.push_str(&format!(
-            "{}{}: {}{}{}\n",
+            "{}{}{}: {}{}{}\n",
             sev_color,
             self.severity.name(),
+            code_suffix,
             bold,
             self.message,
             reset
@@ -208,10 +225,9 @@ impl Diagnostic {
 
         let mut prev_line: Option<usize> = None;
         for (&line_num, labels_on_line) in &lines_map {
-            if let Some(prev) = prev_line {
-                if line_num > prev + 1 {
+            if let Some(prev) = prev_line
+                && line_num > prev + 1 {
                     out.push_str(&format!(" {}...\n", blue_bold));
-                }
             }
             prev_line = Some(line_num);
 
@@ -303,7 +319,11 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.severity.name(), self.message)
+        if let Some(ref code) = self.code {
+            write!(f, "{}[{}]: {}", self.severity.name(), code, self.message)
+        } else {
+            write!(f, "{}: {}", self.severity.name(), self.message)
+        }
     }
 }
 
@@ -334,6 +354,20 @@ mod tests {
         assert!(rendered.contains("let y: bool = x + 1;"));
         assert!(rendered.contains("^^^^^ expected `bool`, found `int`"));
         assert!(rendered.contains("= help: compare the integer expression to produce a `bool`"));
+    }
+
+    #[test]
+    fn test_diagnostic_with_code() {
+        let src = "fn test() {\n    let x: int = 5;\n}";
+        let sm = SourceMap::new(src.to_string());
+
+        let diag = Diagnostic::error(23..24, "unused variable `x`")
+            .with_code("E0308");
+
+        assert_eq!(diag.to_string(), "error[E0308]: unused variable `x`");
+
+        let rendered = diag.render(&sm, Some("test.eta"), false);
+        assert!(rendered.contains("error[E0308]: unused variable `x`"));
     }
 
     #[test]
