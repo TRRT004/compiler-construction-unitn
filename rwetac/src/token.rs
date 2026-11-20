@@ -38,7 +38,7 @@ impl fmt::Display for LexicalError {
 /// used by the [`Lexer`](crate::lexer::Lexer) for automatic semicolon insertion
 /// and never reach the parser.
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t\f]+")] // Ignore this regex pattern between tokens
+#[logos(skip r"[ \t\f\r]+")] // Ignore this regex pattern between tokens
 pub enum Token {
     /// An identifier or variable name,
     #[regex("[_a-zA-Z][_0-9a-zA-Z]*", |lex| lex.slice().to_string())]
