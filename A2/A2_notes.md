@@ -33,7 +33,7 @@ pub struct Diagnostic {
     pub message: String,
     pub primary: Label,
     pub secondary: Vec<Label>,
-    pub suggestion: Option<String>, // rendered as `= help: ...` or `= note: ...`
+    pub suggestions: Vec<String>, // rendered as `= help: ...` or `= note: ...`
 }
 ```
 

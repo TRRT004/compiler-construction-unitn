@@ -50,7 +50,7 @@ pub struct Diagnostic {
     pub message: String,
     pub primary: Label,
     pub secondary: Vec<Label>,
-    pub suggestion: Option<String>,
+    pub suggestions: Vec<String>,
 }
 
 impl Diagnostic {
@@ -62,7 +62,7 @@ impl Diagnostic {
             message: msg.clone(),
             primary: Label::new(span, msg),
             secondary: Vec::new(),
-            suggestion: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -73,7 +73,7 @@ impl Diagnostic {
             message: message.into(),
             primary: Label::new(span, label),
             secondary: Vec::new(),
-            suggestion: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -85,7 +85,7 @@ impl Diagnostic {
             message: msg.clone(),
             primary: Label::new(span, msg),
             secondary: Vec::new(),
-            suggestion: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -95,9 +95,19 @@ impl Diagnostic {
         self
     }
 
-    /// Attaches an optional suggestion or help note.
+    /// Attaches a suggestion or help note. Can be called multiple times.
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
-        self.suggestion = Some(suggestion.into());
+        self.suggestions.push(suggestion.into());
+        self
+    }
+
+    /// Attaches multiple suggestions or help notes.
+    pub fn with_suggestions<I, S>(mut self, suggestions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.suggestions.extend(suggestions.into_iter().map(Into::into));
         self
     }
 
@@ -266,8 +276,8 @@ impl Diagnostic {
         // Empty gutter line after snippets
         out.push_str(&format!(" {}{}|{}\n", blue_bold, gutter_space, reset));
 
-        // Suggestion / help note if present
-        if let Some(suggestion) = &self.suggestion {
+        // Suggestions / help notes if present
+        for suggestion in &self.suggestions {
             out.push_str(&format!(
                 " {}{}={} {}{}:{} {}\n",
                 blue_bold,
@@ -324,5 +334,20 @@ mod tests {
         assert!(rendered.contains("let y: bool = x + 1;"));
         assert!(rendered.contains("^^^^^ expected `bool`, found `int`"));
         assert!(rendered.contains("= help: compare the integer expression to produce a `bool`"));
+    }
+
+    #[test]
+    fn test_diagnostic_multiple_suggestions() {
+        let src = "fn test() {\n    let x: int = 5;\n}";
+        let sm = SourceMap::new(src.to_string());
+
+        let diag = Diagnostic::error(23..24, "unused variable `x`")
+            .with_suggestion("if this is intentional, prefix it with an underscore: `_x`")
+            .with_suggestion("or remove the binding altogether");
+
+        let rendered = diag.render(&sm, Some("test.eta"), false);
+
+        assert!(rendered.contains("= help: if this is intentional, prefix it with an underscore: `_x`"));
+        assert!(rendered.contains("= help: or remove the binding altogether"));
     }
 }
