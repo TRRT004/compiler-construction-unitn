@@ -43,6 +43,8 @@ pub struct MemberEntry {
     pub member_t: Type,
     /// Byte offset of this field from the start of the record.
     pub offset: usize,
+    /// Optional span of the symbol's declaration
+    pub decl_span: Option<logos::Span>,
 }
 
 impl RecordEntry {
@@ -78,10 +80,12 @@ impl RecordEntry {
 }
 
 /// A symbol table entry, pairing a [`Type`] with an [`Attr`].
+/// Also contains the optional span of the symbol's declaration.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub t: Type,
     pub attr: Attr,
+    pub decl_span: Option<logos::Span>,
 }
 
 /// Maps identifier names to their types and attributes.
@@ -115,30 +119,38 @@ impl SymbolTable {
     }
 
     /// Inserts a local variable binding.
-    pub fn add_local_var(&mut self, name: String, t: Type) {
+    pub fn add_local_var(&mut self, name: String, t: Type, decl_span: Option<logos::Span>) {
         self.symbols.insert(
             name,
             Entry {
                 t,
                 attr: Attr::Local,
+                decl_span,
             },
         );
     }
 
     /// Inserts a global variable binding.
-    pub fn add_global_var(&mut self, name: String, t: Type) {
+    pub fn add_global_var(&mut self, name: String, t: Type, decl_span: Option<logos::Span>) {
         self.symbols.insert(
             name,
             Entry {
                 t,
                 attr: Attr::Global,
+                decl_span,
             },
         );
     }
 
     /// Inserts a function binding. `defined` is `false` for forward declarations
     /// and set to `true` once the function body is typechecked.
-    pub fn add_fun(&mut self, name: String, t: Type, defined: bool) {
+    pub fn add_fun(
+        &mut self,
+        name: String,
+        t: Type,
+        defined: bool,
+        decl_span: Option<logos::Span>,
+    ) {
         self.symbols.insert(
             name,
             Entry {
@@ -148,17 +160,19 @@ impl SymbolTable {
                     bytes_required: 0,
                     global: true,
                 },
+                decl_span,
             },
         );
     }
 
     /// Inserts a record type definition.
-    pub fn add_record(&mut self, name: String, rd: RecordEntry) {
+    pub fn add_record(&mut self, name: String, rd: RecordEntry, decl_span: Option<logos::Span>) {
         self.symbols.insert(
             name.clone(),
             Entry {
                 t: Type::Record(name),
                 attr: Attr::Record(rd),
+                decl_span,
             },
         );
     }
@@ -223,7 +237,9 @@ impl fmt::Display for SymbolTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entries: Vec<_> = self.symbols.iter().collect();
         entries.sort_by_key(|(name, _)| {
-            let n = name.rsplit_once('.').map(|(_, n)| n.parse::<usize>().unwrap_or(0));
+            let n = name
+                .rsplit_once('.')
+                .map(|(_, n)| n.parse::<usize>().unwrap_or(0));
             (n, (*name).clone())
         });
         let shown: Vec<String> = entries

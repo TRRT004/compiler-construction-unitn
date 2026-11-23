@@ -242,7 +242,16 @@ impl WtacGen {
         let dst_ptr = b.copy(offset_ptr, convert_type(&f_ret_type));
 
         // Create a store for each member using the arg values Sort in increasing offset order!
-        for ((_, MemberEntry { member_t, offset }), arg_val) in members.iter().zip(arg_vals) {
+        for (
+            (
+                _,
+                MemberEntry {
+                    member_t, offset, ..
+                },
+            ),
+            arg_val,
+        ) in members.iter().zip(arg_vals)
+        {
             let mem_dst = b
                 .gene
                 .mem_of_wtac_var(&dst_ptr, *offset, &convert_type(member_t));

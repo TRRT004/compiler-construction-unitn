@@ -116,6 +116,7 @@ impl WtacGen {
                         MemberEntry {
                             member_t,
                             offset: mem_offset,
+                            ..
                         },
                     ) in members
                     {

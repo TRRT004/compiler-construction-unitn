@@ -338,7 +338,7 @@ impl WtacGen {
         // Use bool here since it has same length as any array
         self.tchecker
             .symtab
-            .add_local_var(a_name.clone(), Type::Bool);
+            .add_local_var(a_name.clone(), Type::Bool, None);
 
         let mut b = InstrBuilder::new(self);
         let arr_ptr = W::Value::Var(a_name.clone());

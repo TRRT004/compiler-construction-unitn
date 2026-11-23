@@ -129,6 +129,7 @@ fn rec_load_store() {
             MemberEntry {
                 member_t: Type::Int,
                 offset: 0,
+                decl_span: None,
             },
         ),
         (
@@ -136,11 +137,14 @@ fn rec_load_store() {
             MemberEntry {
                 member_t: Type::Bool,
                 offset: 8,
+                decl_span: None,
             },
         ),
     ];
     let rec_entry = RecordEntry { members, align: 8 };
-    tchecker.symtab.add_record("Point".to_string(), rec_entry);
+    tchecker
+        .symtab
+        .add_record("Point".to_string(), rec_entry, None);
 
     tchecker.typecheck(&ast).unwrap();
 

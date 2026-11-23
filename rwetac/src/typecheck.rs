@@ -111,7 +111,7 @@ impl Typechecker {
             }],
             ret_type: vec![Type::Int],
         };
-        symtab.add_fun("length".to_string(), length_f_type, true);
+        symtab.add_fun("length".to_string(), length_f_type, true, None);
         Typechecker { symtab }
     }
 
@@ -134,8 +134,11 @@ impl Typechecker {
     /// without checking its body.
     fn add_top_level(&mut self, decl: &Declaration) -> TypeResult {
         match decl {
-            Declaration::FunDecl(Function { name, f_type, .. }) => {
-                self.symtab.add_fun(name.clone(), f_type.clone(), false);
+            Declaration::FunDecl(Function {
+                name, f_type, span, ..
+            }) => {
+                self.symtab
+                    .add_fun(name.clone(), f_type.clone(), false, Some(span.clone()));
                 Ok(())
             }
             Declaration::RecordDecl(rec) => self.typecheck_record(rec),
@@ -159,7 +162,8 @@ impl Typechecker {
                         span: span.clone(),
                     });
                 }
-                self.symtab.add_global_var(name.clone(), var_type.clone());
+                self.symtab
+                    .add_global_var(name.clone(), var_type.clone(), Some(span.clone()));
                 match init
                     .as_ref()
                     .map(|e| self.typecheck_expression(e))
@@ -191,8 +195,11 @@ impl Typechecker {
                 }
 
                 self.typecheck_arr_decl(vd)?;
-                self.symtab
-                    .add_global_var(vd.name.clone(), vd.var_type.clone());
+                self.symtab.add_global_var(
+                    vd.name.clone(),
+                    vd.var_type.clone(),
+                    Some(vd.span.clone()),
+                );
                 Ok(())
             }
             Declaration::FunDecl(function) => self.typecheck_fun(function),
@@ -252,6 +259,7 @@ impl Typechecker {
             let mem_entry = MemberEntry {
                 member_t: t.clone(),
                 offset,
+                decl_span: Some(span.clone()),
             };
             offset += types::get_size(t);
             members.push((name.clone(), mem_entry));
@@ -266,7 +274,8 @@ impl Typechecker {
         // let fn_type = Type::FunType { param_types, ret_type: vec![Type::Record(rec.tag.clone())] };
         // self.symtab.add_fun(rec.tag.clone(), fn_type, true);
 
-        self.symtab.add_record(rec.tag.clone(), rec_entry);
+        self.symtab
+            .add_record(rec.tag.clone(), rec_entry, Some(rec.span.clone()));
         Ok(())
     }
 
@@ -310,11 +319,16 @@ impl Typechecker {
             check_old(e)?
         };
 
-        self.symtab
-            .add_fun(fun.name.clone(), fun.f_type.clone(), true);
+        self.symtab.add_fun(
+            fun.name.clone(),
+            fun.f_type.clone(),
+            true,
+            Some(fun.span.clone()),
+        );
         // Add parameters to Symbol Table and then check the body
         for (p, ty) in fun.params.iter().zip(params_t.iter()) {
-            self.symtab.add_local_var(p.clone(), ty.clone());
+            self.symtab
+                .add_local_var(p.clone(), ty.clone(), Some(fun.span.clone()));
         }
         // Add return type as tuple here!
         let tuple_ret_t = Type::Tuple {
@@ -406,8 +420,9 @@ impl Typechecker {
             let stmt_t = self.typecheck_statement(s, ret_t)?;
             if stmt_t != StatementType::Unit {
                 return Err(TypeError::Generic {
-                    msg: "This statement always returns, so the statements after it are unreachable"
-                        .to_string(),
+                    msg:
+                        "This statement always returns, so the statements after it are unreachable"
+                            .to_string(),
                     span: s.span.clone(),
                 });
             }
@@ -429,8 +444,11 @@ impl Typechecker {
         match &stmt.kind {
             StatementKind::Return(es) => self.typecheck_return(es, &stmt.span, ret_t),
             StatementKind::LocalDecl(vd) => {
-                self.symtab
-                    .add_local_var(vd.name.clone(), vd.var_type.clone());
+                self.symtab.add_local_var(
+                    vd.name.clone(),
+                    vd.var_type.clone(),
+                    Some(vd.span.clone()),
+                );
                 if vd.dims.is_empty() {
                     self.typecheck_scalar_decl(vd)
                 } else {
@@ -725,8 +743,11 @@ impl Typechecker {
             LVal::E(e) => self.typecheck_expression(e),
             LVal::V(vd) => {
                 // add to symbol table
-                self.symtab
-                    .add_local_var(vd.name.clone(), vd.var_type.clone());
+                self.symtab.add_local_var(
+                    vd.name.clone(),
+                    vd.var_type.clone(),
+                    Some(vd.span.clone()),
+                );
                 Ok(vd.var_type.clone())
             }
         }
@@ -736,7 +757,7 @@ impl Typechecker {
     //#[instrument(skip(self), level = "debug")]
     pub fn typecheck_expression(&mut self, expr: &Expression) -> Result<Type, TypeError> {
         let e = match &expr.kind {
-            ExpressionKind::Error => todo!("Nicola: add Type::Error handling"),
+            ExpressionKind::Error => Type::Error,
             ExpressionKind::Var(name) => self.symtab.get(name).t.clone(),
             ExpressionKind::Int(_) => Type::Int,
             ExpressionKind::Bool(_) => Type::Bool,
@@ -883,11 +904,13 @@ impl Typechecker {
                         ret_type,
                     },
                 attr: Attr::Fun { .. },
+                ..
             } => (param_types, ret_type),
             // Record Constructor!
             Entry {
                 t,
                 attr: Attr::Record(rec_entry),
+                ..
             } => {
                 let mut param_types = Vec::new();
                 for (_, mem_entry) in &rec_entry.members {

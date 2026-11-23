@@ -23,6 +23,7 @@ pub fn setup(input: &str) -> Env<'_> {
             MemberEntry {
                 member_t: Type::Int,
                 offset: 0,
+                decl_span: None,
             },
         ),
         (
@@ -30,37 +31,50 @@ pub fn setup(input: &str) -> Env<'_> {
             MemberEntry {
                 member_t: Type::Int,
                 offset: 0,
+                decl_span: None,
             },
         ),
     ];
 
     // RecordEntry'
     let rec_entry = RecordEntry { members, align: 8 };
-    tchecker.symtab.add_record("Point".to_string(), rec_entry);
     tchecker
         .symtab
-        .add_local_var("p".to_string(), Type::Record("Point".to_string()));
+        .add_record("Point".to_string(), rec_entry, None);
+    tchecker
+        .symtab
+        .add_local_var("p".to_string(), Type::Record("Point".to_string()), None);
 
     // Some more bindings that can be used in tests
     let f_type = Type::FunType {
         param_types: vec![Type::Int, Type::Int],
         ret_type: vec![Type::Int, Type::Int],
     };
-    tchecker.symtab.add_fun("test".to_string(), f_type, true);
-    tchecker.symtab.add_local_var("x".to_string(), Type::Int);
-    tchecker.symtab.add_local_var("y".to_string(), Type::Int);
-    tchecker.symtab.add_local_var("z".to_string(), Type::Int);
+    tchecker
+        .symtab
+        .add_fun("test".to_string(), f_type, true, None);
+    tchecker
+        .symtab
+        .add_local_var("x".to_string(), Type::Int, None);
+    tchecker
+        .symtab
+        .add_local_var("y".to_string(), Type::Int, None);
+    tchecker
+        .symtab
+        .add_local_var("z".to_string(), Type::Int, None);
     tchecker.symtab.add_local_var(
         "a".to_string(),
         Type::Array {
             elem_type: Box::new(Type::Int),
         },
+        None,
     );
     tchecker.symtab.add_local_var(
         "b".to_string(),
         Type::Array {
             elem_type: Box::new(Type::Bool),
         },
+        None,
     );
     Env {
         parser: parser::Parser::new(lexer),

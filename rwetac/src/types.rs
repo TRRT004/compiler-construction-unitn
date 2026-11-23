@@ -38,12 +38,15 @@ pub enum Type {
         param_types: Vec<Type>,
         ret_type: Vec<Type>,
     },
+    /// An Error type
+    Error,
 }
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // write!(f, "{:?}", self)
         match self {
+            Type::Error => write!(f, "<error>"),
             Type::Int => write!(f, "int"),
             Type::Bool => write!(f, "bool"),
             Type::Unknown => write!(f, "unknown"),
@@ -108,8 +111,8 @@ pub fn get_size(t: &Type) -> usize {
         Type::Array { .. } | Type::Record(_) => 4,
         Type::Int => 8,
         Type::Bool => 4,
-        Type::FunType { .. } | Type::Tuple { .. } | Type::Unknown => {
-            panic!("Internal Error: Function, Tuple Types and Unknown have no size")
+        Type::FunType { .. } | Type::Tuple { .. } | Type::Unknown | Type::Error => {
+            panic!("Internal Error: Function, Tuple Types, Unknown and Error have no size")
         }
     }
 }
@@ -124,8 +127,8 @@ pub fn get_align(t: &Type) -> usize {
         Type::Array { .. } | Type::Record(_) => 4,
         Type::Int => 8,
         Type::Bool => 4,
-        Type::FunType { .. } | Type::Tuple { .. } | Type::Unknown => {
-            panic!("Internal Error: Function, Tuple Types and Unknown have no alignment")
+        Type::FunType { .. } | Type::Tuple { .. } | Type::Unknown | Type::Error => {
+            panic!("Internal Error: Function, Tuple Types, Unknown and Error have no alignment")
         }
     }
 }

@@ -14,7 +14,7 @@
 
 # Nicola
 - [] Generate 3 broken programs.
-- [] Modify `Symbol table` to allow to attach secondary spans.
+- [x] Modify `Symbol table` to allow to attach secondary spans.
 - [] Add `Type::Error` to `types.rs` and `typecheck.rs`.
 - [] Add `Diagnostics` to `typecheck.rs` with secondary spans.
 

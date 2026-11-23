@@ -168,9 +168,11 @@ impl WtacGen {
         } else {
             panic!("Retun Pointer has to have Tuple Type")
         };
-        self.tchecker
-            .symtab
-            .add_local_var(dst_name.clone(), Type::Tuple { elems: flattened_t });
+        self.tchecker.symtab.add_local_var(
+            dst_name.clone(),
+            Type::Tuple { elems: flattened_t },
+            None,
+        );
 
         dst_name
     }
@@ -414,5 +416,6 @@ pub fn convert_type(t: &Type) -> W::WType {
         Type::Unknown => panic!("Internal Error: Tried to convert Unknown Type"),
         Type::Tuple { .. } => W::WType::I32, // If tuple is encountered it was for ret_ptr or dst_ptr of function calls. To know how to destruct them. They act as pinters
         Type::FunType { .. } => panic!("Internal Error: Cannot convert Function Type"),
+        Type::Error => panic!("Internal Error: Error type reached WTAC generation"),
     }
 }
