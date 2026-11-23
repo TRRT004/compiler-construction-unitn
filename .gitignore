@@ -9,6 +9,7 @@ rwetac/Dot_files
 
 *.snap.new
 memory_dump.bin
+*.zip
 
 __pycache__/
 *_debug/

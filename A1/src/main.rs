@@ -133,7 +133,23 @@ fn type_name(v: &Value) -> &'static str {
     }
 }
 
+fn resolve_example_path(path: &Path) -> PathBuf {
+    if let Ok(content) = fs::read_to_string(path) {
+        let trimmed = content.trim();
+        if trimmed.starts_with("../") && !trimmed.contains('\n')
+            && let Some(parent) = path.parent() {
+                let candidate = parent.join(trimmed);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+    }
+    path.to_path_buf()
+}
+
 fn run_single_example(path: &Path) -> Result<String, String> {
+    let resolved = resolve_example_path(path);
+    let path = resolved.as_path();
     let expected = expected_value(path)?;
     let unopt_res = run_wasm(path, false);
     let opt_res = run_wasm(path, true);

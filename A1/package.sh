@@ -13,8 +13,7 @@ fi
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
-# 1. Copy runtime, rwetac, and architecture.md (referenced by rwetac/src/lib.rs via include_str!)
-cp -a "$REPO_ROOT/runtime" "$STAGE_DIR/runtime"
+# 1. Copy rwetac and architecture.md (referenced by rwetac/src/lib.rs via include_str!)
 cp -a "$REPO_ROOT/rwetac" "$STAGE_DIR/rwetac"
 cp -a "$REPO_ROOT/architecture.md" "$STAGE_DIR/architecture.md"
 
@@ -34,7 +33,6 @@ wasmer = "6.0.1"
 
 [workspace]
 members = [
-    "runtime",
     "rwetac"
 ]
 resolver = "3"
@@ -51,14 +49,33 @@ if [ -f "$SCRIPT_DIR/assignment_1.pdf" ]; then
     cp -a "$SCRIPT_DIR/assignment_1.pdf" "$STAGE_DIR/assignment_1.pdf"
 fi
 
-# Dereference symlinks (-L) so examples/* are standalone files that work on all OSes (Windows/macOS/Linux)
-cp -rL "$SCRIPT_DIR/examples" "$STAGE_DIR/examples"
+# Copy examples, supporting real symlinks and Windows git text symlinks (raw relative paths)
+mkdir -p "$STAGE_DIR/examples"
+for f in "$SCRIPT_DIR/examples"/*; do
+    [ -e "$f" ] || continue
+    fname="$(basename "$f")"
+    if [ -h "$f" ]; then
+        # Real symlink: dereference
+        cp -L "$f" "$STAGE_DIR/examples/$fname"
+    elif [ -f "$f" ] && [ "$(wc -l < "$f")" -le 1 ] && grep -q '^\.\./' "$f" 2>/dev/null; then
+        # Windows git text symlink (raw relative path)
+        target_rel="$(tr -d '\r\n' < "$f")"
+        target_path="$SCRIPT_DIR/examples/$target_rel"
+        if [ -f "$target_path" ]; then
+            cp "$target_path" "$STAGE_DIR/examples/$fname"
+        else
+            cp "$f" "$STAGE_DIR/examples/$fname"
+        fi
+    else
+        cp -a "$f" "$STAGE_DIR/examples/$fname"
+    fi
+done
 
 # 4. Build the zip archive
 rm -f "$OUT_ZIP"
 (
     cd "$STAGE_DIR"
-    zip -r -q "$OUT_ZIP" README.md runtime rwetac src examples Cargo.toml Cargo.lock architecture.md assignment_1.pdf
+    zip -r -q "$OUT_ZIP" README.md rwetac src examples Cargo.toml Cargo.lock architecture.md assignment_1.pdf
 )
 
 echo "Created zip archive at: $OUT_ZIP"
