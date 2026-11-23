@@ -25,7 +25,8 @@ struct Layout {
 fn layout_of(src: &str, tag: &str) -> Layout {
     let lexer = lexer::Lexer::new(src);
     let mut parser = parser::Parser::new(lexer);
-    let mut ast = parser.parse_program().expect("parse failed");
+    let (mut ast, errors) = parser.parse_program();
+    assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
     if let Err(e) = Resolver::new().resolve(&mut ast) {
         panic!("resolve failed: {}", e.msg);
     }

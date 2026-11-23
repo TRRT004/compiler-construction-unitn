@@ -80,7 +80,12 @@ fn record_wrong_assign() {
 fn record_correct_assign() {
     let mut env = common::setup("p.x = 2");
     // This one should succeed, so we don’t wrap it in expect_failure.
-    let ast = env.parser.parse_statement().unwrap();
+    let ast = env.parser.parse_statement();
+    assert!(
+        env.parser.errors().is_empty(),
+        "unexpected parse errors: {:?}",
+        env.parser.errors()
+    );
     let result = env.tchecker.typecheck_statement(&ast, &types::Type::Bool);
     assert_snapshot!(format!("{result:?}"), @"Ok(Unit)");
 }

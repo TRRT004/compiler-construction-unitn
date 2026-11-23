@@ -43,6 +43,9 @@ impl WtacGen {
             } => self.gen_if(guard, then_br, else_br),
             ast::StatementKind::While { guard, body } => self.gen_while(guard, body),
             ast::StatementKind::Procedure { name, args } => self.gen_procedure_call(name, args),
+            ast::StatementKind::Error => {
+                panic!("Internal Error: StatementKind::Error should not be present in AST")
+            }
         }
     }
 
@@ -436,6 +439,9 @@ impl WtacGen {
             ast::LVal::E(e) => {
                 // IMPORTANT not to convert! a[i] here will be a store!
                 self.gen_expression(e)
+            }
+            ast::LVal::Error(_span) => {
+                panic!("Internal Error: LVal::Error should not be present in AST")
             }
         }
     }

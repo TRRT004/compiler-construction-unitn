@@ -22,7 +22,8 @@ use rwetac::wtac::wtac_gen::WtacGen;
 fn cfgs_for(src: &str) -> Vec<Cfg> {
     let lexer = rwetac::lexer::Lexer::new(src);
     let mut parser = rwetac::parser::Parser::new(lexer);
-    let mut ast = parser.parse().expect("parse failed");
+    let (mut ast, errors) = parser.parse();
+    assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
     Resolver::new().resolve(&mut ast).ok();
     let mut tc = Typechecker::new();
     tc.typecheck(&ast).expect("typecheck failed");

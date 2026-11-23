@@ -84,7 +84,12 @@ pub fn setup(input: &str) -> Env<'_> {
 
 pub fn typecheck_stmt(input: &str) -> String {
     let mut env = setup(input);
-    let ast = env.parser.parse_statement().unwrap();
+    let ast = env.parser.parse_statement();
+    assert!(
+        env.parser.errors().is_empty(),
+        "unexpected parse errors: {:?}",
+        env.parser.errors()
+    );
     match env.tchecker.typecheck_statement(&ast, &Type::Bool) {
         Ok(_) => panic!("Typechecking succeded unexpectedly"),
         Err(e) => format!("Failure: {:#?}", e),
@@ -93,7 +98,12 @@ pub fn typecheck_stmt(input: &str) -> String {
 
 pub fn typecheck_expr(input: &str) -> String {
     let mut env = setup(input);
-    let ast = env.parser.parse_expression(0).unwrap();
+    let ast = env.parser.parse_expression(0);
+    assert!(
+        env.parser.errors().is_empty(),
+        "unexpected parse errors: {:?}",
+        env.parser.errors()
+    );
     match env.tchecker.typecheck_expression(&ast) {
         Ok(_) => panic!("Typechecking succeded unexpectedly"),
         Err(e) => format!("Failure: {:#?}", e),
@@ -102,7 +112,12 @@ pub fn typecheck_expr(input: &str) -> String {
 
 pub fn typecheck_expr_succeed(input: &str) -> String {
     let mut env = setup(input);
-    let ast = env.parser.parse_expression(0).unwrap();
+    let ast = env.parser.parse_expression(0);
+    assert!(
+        env.parser.errors().is_empty(),
+        "unexpected parse errors: {:?}",
+        env.parser.errors()
+    );
     match env.tchecker.typecheck_expression(&ast) {
         Ok(t) => format!("{}", t),
         Err(_) => panic!("Typechecking failed unexpectedly"),
@@ -111,7 +126,12 @@ pub fn typecheck_expr_succeed(input: &str) -> String {
 
 pub fn typecheck_stmt_succeed(input: &str) -> String {
     let mut env = setup(input);
-    let ast = env.parser.parse_statement().unwrap();
+    let ast = env.parser.parse_statement();
+    assert!(
+        env.parser.errors().is_empty(),
+        "unexpected parse errors: {:?}",
+        env.parser.errors()
+    );
     match env.tchecker.typecheck_statement(&ast, &Type::Bool) {
         Ok(_) => "Ok(())".to_string(),
         Err(_) => panic!("Typechecking failed unexpectedly"),

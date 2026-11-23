@@ -10,9 +10,7 @@
 //! token of lookahead is needed to distinguish function declarations from globals
 //! at the top level (e.g. `foo(` vs `foo:`).
 
-use core::panic;
-use std::fmt;
-
+use crate::diagnostic::Diagnostic;
 use crate::lexer::Lexer;
 use crate::types::Type;
 use crate::util::Merge;
@@ -22,56 +20,17 @@ use peekmore::PeekMore;
 use peekmore::PeekMoreIterator;
 use tracing::{debug, info, instrument, warn};
 
-/// An error produced during parsing.
-#[derive(Debug)]
-pub enum ParserError {
-    /// The parser encountered a token it did not expect in the current context.
-    /// Contains a descriptive message, the offending token, and its span.
-    UnexpectedToken(String, Token, logos::Span),
-
-    /// An expression was found in a position where it is not valid
-    /// (e.g. a non-identifier before a function call).
-    InvalidExpression(String, ExpressionKind, logos::Span),
-}
-
-impl ParserError {
-    pub fn span(&self) -> &logos::Span {
-        match self {
-            ParserError::UnexpectedToken(_, _, span) => span,
-            ParserError::InvalidExpression(_, _, span) => span,
-        }
-    }
-}
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParserError::UnexpectedToken(msg, token, _) => {
-                writeln!(f, "Unexpected Token {}! Message: {}", token, msg)?
-            }
-            ParserError::InvalidExpression(msg, e, _) => {
-                writeln!(f, "Invalid Expression: {:?} Msg: {}", e, msg)?
-            }
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for ParserError {}
-
-/// Convenience alias for parser results.
-type PResult<T> = Result<T, ParserError>;
-
 /// The lexer turns newlines into semicolons, so a [`Token::Semicolon`] found
 /// where something else was expected nearly always means a line was broken in
 /// the wrong place rather than that the user typed a `;`.
-fn asi_hint(found: &Token) -> &'static str {
+fn asi_hint(found: &Token) -> Option<&'static str> {
     match found {
-        Token::Semicolon => {
-            ". Note the line break here was turned into a statement separator, so this `;` is \
+        Token::Semicolon => Some(
+            "Note: the line break here was turned into a statement separator, so this `;` is \
              not in the source. If this line was meant to continue the previous one, end the \
-             previous line with the operator or comma"
-        }
-        _ => "",
+             previous line with the operator or comma",
+        ),
+        _ => None,
     }
 }
 
@@ -85,11 +44,12 @@ fn asi_hint(found: &Token) -> &'static str {
 /// ```ignore
 /// let lexer = Lexer::new(source);
 /// let mut parser = Parser::new(lexer);
-/// let ast = parser.parse()?;
+/// let (ast, errors) = parser.parse();
 /// ```
 pub struct Parser<'a> {
     lexer: PeekMoreIterator<Lexer<'a>>,
     input_length: usize,
+    errors: Vec<Diagnostic>,
 }
 
 impl<'a> Parser<'a> {
@@ -99,12 +59,40 @@ impl<'a> Parser<'a> {
         Parser {
             lexer: lexer.peekmore(),
             input_length: len,
+            errors: Vec::new(),
         }
     }
 
     /// Returns `true` if the token stream is exhausted.
     pub fn is_eof(&mut self) -> bool {
         self.lexer.peek().is_none()
+    }
+
+    /// Returns the diagnostics accumulated so far during parsing.
+    pub fn errors(&self) -> &[Diagnostic] {
+        &self.errors
+    }
+
+    /// Records a [`Diagnostic`] at `span` and attaches an ASI suggestion when `found` is `;`.
+    fn push_error(
+        &mut self,
+        span: Span,
+        found: &Token,
+        message: impl Into<String>,
+        label: impl Into<String>,
+    ) {
+        let mut diag = Diagnostic::error_with_label(span, message, label);
+        if let Some(hint) = asi_hint(found) {
+            diag = diag.with_suggestion(hint);
+        }
+        self.errors.push(diag);
+    }
+
+    /// Records a [`Diagnostic`] for the current lookahead token and its span.
+    fn push_unexpected_token(&mut self, message: impl Into<String>, label: impl Into<String>) {
+        let found = self.peek().clone();
+        let span = self.peek_span();
+        self.push_error(span, &found, message, label);
     }
 
     /// Consumes and returns the next token and its span.
@@ -153,126 +141,268 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Consumes the next token of the iterator and compares it with `kind`.
+    /// Consumes the next token of the iterator if it matches `kind`.
     ///
-    /// If the token matches the `kind` return its [`Span`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParserError::UnexpectedToken`] upon failure.
-    fn expect(&mut self, kind: Token) -> PResult<Span> {
-        let (tok, span) = match self.lexer.next() {
-            Some(s_tok) => s_tok.unwrap(),
-            None => (
-                Token::Eof,
-                Span {
-                    start: self.input_length,
-                    end: self.input_length,
-                },
-            ),
-        };
-        if kind == tok {
-            return Ok(span);
-        }
-        let error_msg = format!("Expected {:?}{}", kind, asi_hint(&tok));
-        Err(ParserError::UnexpectedToken(error_msg, tok, span))
-    }
-
-    /// Similar to [`Self::expect`] just specialized for identifiers.
-    fn expect_id(&mut self) -> PResult<(String, Span)> {
-        let (tok, span) = self.consume();
-        match tok {
-            Token::Var(id) => Ok((id, span)),
-            _ => {
-                let error_msg = "Expected Identifer".to_string();
-                Err(ParserError::UnexpectedToken(error_msg, tok, span))
-            }
+    /// If the token matches `kind`, returns its [`Span`]. Otherwise records a
+    /// [`Diagnostic`] and returns [`None`] without consuming the token.
+    fn expect(&mut self, kind: Token) -> Option<Span> {
+        if *self.peek() == kind {
+            let span = self.peek_span();
+            self.consume();
+            Some(span)
+        } else {
+            let found = self.peek().clone();
+            self.push_unexpected_token(
+                "unexpected token",
+                format!("expected {:?}, found {:?}", kind, found),
+            );
+            None
         }
     }
 
-    /// Entry point: parses the full token stream into a [`Program`].
+    /// Similar to [`Self::expect`], specialized for identifiers.
+    fn expect_id(&mut self) -> Option<(String, Span)> {
+        let span = self.peek_span();
+        if let Token::Var(name) = self.peek() {
+            let name = name.clone();
+            self.consume();
+            Some((name, span))
+        } else {
+            let found = self.peek().clone();
+            self.push_unexpected_token(
+                "expected identifier",
+                format!("expected identifier, found {:?}", found),
+            );
+            None
+        }
+    }
+
+    /// Entry point: parses the full token stream into a [`Program`] and a list of [`Diagnostic`]s.
     // #[instrument(name="Parsing",
     // skip(self))]
-    pub fn parse(&mut self) -> PResult<Program> {
+    pub fn parse(&mut self) -> (Program, Vec<Diagnostic>) {
         self.parse_program()
     }
 
-    pub fn parse_program(&mut self) -> PResult<Program> {
+    pub fn parse_program(&mut self) -> (Program, Vec<Diagnostic>) {
         let mut decls = Vec::new();
         while !self.is_eof() {
-            let decl = self.parse_declaration()?;
-            decls.push(decl);
+            decls.push(self.parse_declaration());
             // Semcolons automatically added by Lexer
-            self.expect(Token::Semicolon)?;
+            if *self.peek() == Token::Semicolon {
+                self.consume();
+            } else if !self.is_eof() && !matches!(decls.last(), Some(Declaration::Error)) {
+                let found = self.peek().clone();
+                self.push_unexpected_token(
+                    "expected `;` after declaration",
+                    format!("expected `;`, found {:?}", found),
+                );
+            }
         }
 
-        Ok(Program { decls })
+        (Program { decls }, self.errors.clone())
     }
 
-    fn parse_declaration(&mut self) -> PResult<Declaration> {
-        match self.peek() {
-            Token::Var(_) => {
-                let decl = match self.peek_n(1) {
-                    Token::LParen => Declaration::FunDecl(self.parse_function()?),
-                    _ => Declaration::Global(self.parse_variable_declaration()?),
-                };
-                Ok(decl)
+    /// Synchronizes the parser to the next declaration.
+    fn syncronize_decl(&mut self, mut brace_depth: usize) {
+
+        if let Token::Var(_) = self.peek()
+            && self.peek_n(1) != Token::LParen && self.peek_n(1) != Token::Colon {
+                self.consume();
+        }
+
+        while !self.is_eof() {
+            let tok = self.peek().clone();
+            match tok {
+                Token::LBrace => {
+                    self.consume();
+                    brace_depth += 1;
+                }
+                Token::RBrace => {
+                    self.consume();
+                    if brace_depth == 0 {
+                        return;
+                    }
+                    brace_depth -= 1;
+                }
+                Token::Semicolon => {
+                    if brace_depth == 0 {
+                        return;
+                    } else {
+                        self.consume();
+                    }
+                }
+                Token::Record => {
+                    if brace_depth == 0 {
+                        return;
+                    } else {
+                        self.consume();
+                    }
+                }
+                Token::Var(_)
+                    if brace_depth == 0 && matches!(self.peek_n(1), Token::LParen | Token::Colon) => {
+                        return;
+                    }
+                _ => {
+                    self.consume();
+                }
             }
-            Token::Record => Ok(Declaration::RecordDecl(self.parse_record()?)),
-            _ => Err(ParserError::UnexpectedToken(
-                "Not a valid Declaration".to_string(),
-                self.peek().clone(),
-                self.peek_span(),
-            )),
+        }
+    }
+
+    fn parse_declaration(&mut self) -> Declaration {
+        match self.peek() {
+            Token::Var(_) => match self.peek_n(1) {
+                Token::LParen => if let Some(f) = self.parse_function() {
+                    Declaration::FunDecl(f)
+                } else {
+                    Declaration::Error
+                },
+                Token::Colon => if let Some(vd) = self.parse_variable_declaration() {
+                    Declaration::Global(vd)
+                } else {
+                    self.syncronize_decl(0);
+                    Declaration::Error
+                },
+                _ => {
+                    let found = self.peek().clone();
+                    self.push_unexpected_token(
+                        "invalid declaration",
+                        format!("expected function or variable declaration, found {:?}", found),
+                    );
+                    self.syncronize_decl(0);
+                    Declaration::Error
+                }
+            }
+            Token::Record => if let Some(record) = self.parse_record() {
+                Declaration::RecordDecl(record)
+            } else {
+                Declaration::Error
+            },
+            _ => {
+                let found = self.peek().clone();
+                self.push_unexpected_token(
+                    "invalid declaration",
+                    format!("not a valid declaration, found {:?}", found),
+                );
+                self.syncronize_decl(0);
+                Declaration::Error
+            }
         }
     }
 
     /// Parses a record type declaration. Members are newline-separated:
     /// `record Point {` / `x : int` / `y : bool` / `}`.
-    fn parse_record(&mut self) -> PResult<Record> {
-        let span_keyword = self.expect(Token::Record)?;
-        let (tag, span_name) = self.expect_id()?;
-        self.expect(Token::LBrace)?;
+    fn parse_record(&mut self) -> Option<Record> {
+        let Some(span_keyword) = self.expect(Token::Record) else {
+            self.syncronize_decl(0);
+            return None;
+        };
+        let Some((tag, span_name)) = self.expect_id() else {
+            self.syncronize_decl(0);
+            return None;
+        };
+        let Some(_) = self.expect(Token::LBrace) else {
+            self.syncronize_decl(0);
+            return None;
+        };
+        let members = self.parse_members();
 
-        let members = self.parse_members()?;
+        let Some(_) = self.expect(Token::RBrace) else {
+            self.syncronize_decl(0);
+            return None;
+        };
 
-        self.expect(Token::RBrace)?;
-        Ok(Record {
+        Some(Record {
             tag,
             members,
             span: span_keyword.merge(&span_name),
         })
     }
 
-    fn parse_members(&mut self) -> PResult<Vec<MemberDecl>> {
+    /// Synchronizes the parser to the next member or end of record.
+    fn syncronize_member(&mut self) {
+        while !self.is_eof() {
+            match self.peek() {
+                Token::Semicolon => {
+                    self.consume();
+                    return;
+                }
+                Token::RBrace => {
+                    return; // Leave RBrace for parse_record to see
+                }
+                _ => {
+                    self.consume();
+                }
+            }
+        }
+    }
+
+    fn parse_members(&mut self) -> Vec<Member> {
         let mut members = Vec::new();
         // x, y : int allowed!
         while *self.peek() != Token::RBrace && !self.is_eof() {
-            let names_spans = self.parse_sep_list_comma(Token::Colon, |p| p.expect_id())?;
-            self.expect(Token::Colon)?;
-            let (ty, span_ty) = self.parse_type()?;
+            let names_spans = self.parse_sep_list_comma(Token::Colon, |p| p.expect_id());
+            let Some(_) = self.expect(Token::Colon) else {
+                self.syncronize_member();
+                members.push(Member::Error);
+                continue;
+            };
+            let (ty, span_ty) = if matches!(self.peek(), Token::RBrace | Token::Semicolon | Token::Eof) {
+                let found = self.peek().clone();
+                self.push_unexpected_token(
+                    "expected member type",
+                    format!("expected type, found {:?}", found),
+                );
+                (Type::Error, self.peek_span())
+            } else {
+                self.parse_type()
+            };
+            let mut pushed_any = false;
             // match names with type
-            for (name, span) in names_spans {
-                members.push(MemberDecl {
+            for opt_name in names_spans {
+                let Some((name, span)) = opt_name else {
+                    members.push(Member::Error);
+                    pushed_any = true;
+                    continue;
+                };
+                members.push(Member::Var(MemberDecl {
                     name,
                     t: ty.clone(),
                     span: span.merge(&span_ty),
-                });
+                }));
+                pushed_any = true;
+            }
+            if !pushed_any {
+                members.push(Member::Error);
             }
 
-            self.expect(Token::Semicolon)?;
+            if self.expect(Token::Semicolon).is_none() {
+                self.syncronize_member();
+            }
         }
-        Ok(members)
+        members
     }
     // sort(a: int[]) { } ratadd(p1:int, q1:int, p2:int, q2:int) : int, int
     // #[instrument(skip(self))]
-    fn parse_function(&mut self) -> PResult<Function> {
-        let (name, span_name) = self.expect_id()?;
+    fn parse_function(&mut self) -> Option<Function> {
+        let Some((name, span_name)) = self.expect_id() else {
+            self.syncronize_decl(0);
+            return None;
+        };
         info!("Parsing function {}", name);
-        self.expect(Token::LParen)?;
+        let Some(_) = self.expect(Token::LParen) else {
+            self.syncronize_decl(0);
+            return None;
+        };
         // Parse params
-        let (params, types) = self.parse_params()?.into_iter().unzip();
-        self.expect(Token::RParen)?;
+        let (params, types) = self.parse_params().into_iter().unzip();
+
+        let Some(_) = self.expect(Token::RParen) else {
+            self.syncronize_decl(0);
+            return None;
+        };
+
         // Check return type
 
         let ret_t: Vec<Type> = match self.peek() {
@@ -280,7 +410,7 @@ impl<'a> Parser<'a> {
                 self.consume();
                 // Throw away span information
                 let vec_span: Vec<(Type, std::ops::Range<usize>)> =
-                    self.parse_sep_list_comma(Token::LBrace, |p| p.parse_type())?;
+                    self.parse_sep_list_comma(Token::LBrace, |p| p.parse_type());
                 vec_span.into_iter().map(|(ty, _)| ty).collect()
             }
             _ => vec![],
@@ -289,16 +419,22 @@ impl<'a> Parser<'a> {
             param_types: types,
             ret_type: ret_t,
         };
-        self.expect(Token::LBrace)?;
+        let Some(_) = self.expect(Token::LBrace) else {
+            self.syncronize_decl(0);
+            return None;
+        };
         // Parse Body
         let body = Block {
-            stmts: self.parse_block()?,
+            stmts: self.parse_block(),
         };
-        self.expect(Token::RBrace)?;
+        let Some(_) = self.expect(Token::RBrace) else {
+            self.syncronize_decl(0);
+            return None;
+        };
 
         // Construct Type
 
-        Ok(Function {
+        Some(Function {
             name,
             params,
             f_type,
@@ -307,19 +443,42 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_params(&mut self) -> PResult<Vec<(String, Type)>> {
-        // let mut params = Vec::new();
+    fn parse_params(&mut self) -> Vec<(Option<String>, Type)> {
         let ps = |p: &mut Self| {
-            let (name, _span_name) = p.expect_id()?;
-            p.expect(Token::Colon)?;
-            let (t, _) = p.parse_type()?;
-            Ok((name, t))
+            let opt_name = p.expect_id();
+            let has_colon = p.expect(Token::Colon).is_some();
+            let t = if matches!(
+                p.peek(),
+                Token::Comma | Token::RParen | Token::LBrace | Token::Semicolon | Token::Eof
+            ) {
+                if has_colon {
+                    let found = p.peek().clone();
+                    p.push_unexpected_token(
+                        "expected parameter type",
+                        format!("expected type, found {:?}", found),
+                    );
+                }
+                Type::Error
+            } else {
+                p.parse_type().0
+            };
+            (opt_name.map(|(name, _)| name), t)
         };
         self.parse_sep_list_comma(Token::RParen, ps)
     }
 
     // Only primary types (Used for array declarations)
-    fn parse_prim_type(&mut self) -> PResult<(Type, Span)> {
+    fn parse_prim_type(&mut self) -> (Type, Span) {
+        if self.is_eof() {
+            let span = self.peek_span();
+            self.push_error(
+                span.clone(),
+                &Token::Eof,
+                "unexpected end of input",
+                "expected type, found Eof",
+            );
+            return (Type::Error, span);
+        }
         // base type like int
         let (t, span) = self.consume();
         let ty = match t {
@@ -327,57 +486,94 @@ impl<'a> Parser<'a> {
             Token::TBool => Type::Bool,
             Token::Var(name) => Type::Record(name),
             _ => {
-                return Err(ParserError::UnexpectedToken(
-                    "Should be type".to_string(),
-                    t,
-                    span,
-                ));
+                self.push_error(
+                    span.clone(),
+                    &t,
+                    "expected type",
+                    format!("expected type, found {:?}", t),
+                );
+                return (Type::Error, span);
             }
         };
-        Ok((ty, span))
+        (ty, span)
     }
 
-    fn parse_type(&mut self) -> PResult<(Type, Span)> {
-        let (mut ty, span_ty) = self.parse_prim_type()?;
+    fn parse_type(&mut self) -> (Type, Span) {
+        let (mut ty, span_ty) = self.parse_prim_type();
         // Parse array type
         let mut end_span = span_ty.clone();
         while let Token::LBrack = self.peek() {
             self.consume();
-            end_span = self.expect(Token::RBrack)?;
+            end_span = self.expect(Token::RBrack).unwrap_or(end_span.clone());
             ty = Type::Array {
                 elem_type: Box::new(ty),
             }
         }
-        Ok((ty, span_ty.merge(&end_span)))
+        (ty, span_ty.merge(&end_span))
     }
 
-    fn parse_block(&mut self) -> PResult<Vec<Statement>> {
+    fn syncronize_stmt(&mut self, mut brace_depth: usize) {
+        while !self.is_eof() {
+            match self.peek() {
+                Token::LBrace => {
+                    self.consume();
+                    brace_depth += 1;
+                }
+                Token::RBrace => {
+                    if brace_depth == 0 {
+                        return;
+                    }
+                    self.consume();
+                    brace_depth -= 1;
+                }
+                Token::Semicolon => {
+                    self.consume();
+                    if brace_depth == 0 {
+                        return;
+                    }
+                }
+                _ => {
+                    self.consume();
+                }
+            }
+        }
+    }
+
+    fn parse_block(&mut self) -> Vec<Statement> {
         let mut stmts = Vec::new();
         while *self.peek() != Token::RBrace && !self.is_eof() {
-            let stmt = self.parse_statement()?;
-            stmts.push(stmt);
+            let stmt = self.parse_statement();
+            if matches!(stmt.kind, StatementKind::Error) {
+                self.syncronize_stmt(0);
+            } else {
+                stmts.push(stmt);
+            }
         }
-        Ok(stmts)
+        stmts
     }
-    // len: int = 100
-    // 2 n’: int = -1
-    // 3 debug: bool = false
-    // and all the array stuff
-    fn parse_variable_declaration(&mut self) -> PResult<VarDeclaration> {
-        let (name, span_name) = self.expect_id()?;
-        self.expect(Token::Colon)?;
-        let (base_ty, _span_ty) = self.parse_prim_type()?;
 
-        // Check for array dimensions
+    fn parse_array_dims(
+        &mut self,
+        base_ty: Type,
+        base_span: Span,
+    ) -> (Type, Vec<Option<Expression>>, Span) {
         let mut dims = Vec::new();
+        let mut span_end = base_span;
         while *self.peek() == Token::LBrack {
             self.consume(); // [
-            let dim_expr = if *self.peek() != Token::RBrack {
-                Some(self.parse_expression(0)?) // parse e.g. 3, n, etc.
+            let dim_expr = if *self.peek() != Token::RBrack && !self.is_eof() {
+                Some(self.parse_expression(0)) // parse e.g. 3, n, etc.
             } else {
                 None
             };
-            self.expect(Token::RBrack)?;
+            let Some(tmp_span_end) = self.expect(Token::RBrack) else {
+                dims.push(Some(dim_expr.unwrap_or_else(|| Expression {
+                    kind: ExpressionKind::Error,
+                    span: self.peek_span(),
+                })));
+                break;
+            };
+            span_end = tmp_span_end;
             dims.push(dim_expr);
         }
 
@@ -388,16 +584,28 @@ impl<'a> Parser<'a> {
                 elem_type: Box::new(var_type),
             };
         }
+        (var_type, dims, span_end)
+    }
+
+    // len: int = 100
+    // 2 n’: int = -1
+    // 3 debug: bool = false
+    // and all the array stuff
+    fn parse_variable_declaration(&mut self) -> Option<VarDeclaration> {
+        let (name, span_name) = self.expect_id()?;
+        self.expect(Token::Colon)?;
+        let (base_ty, span_ty) = self.parse_prim_type();
+        let (var_type, dims, _) = self.parse_array_dims(base_ty, span_ty);
 
         // Check initializer
         let init = match self.peek() {
             Token::Equal => {
                 self.consume();
-                Some(self.parse_expression(0)?)
+                Some(self.parse_expression(0))
             }
             _ => None,
         };
-        Ok(VarDeclaration {
+        Some(VarDeclaration {
             name,
             init,
             var_type,
@@ -411,7 +619,7 @@ impl<'a> Parser<'a> {
     /// Statement parsing is the most involved part of the parser because
     /// assignments, variable declarations, and procedure calls all start with
     /// an identifier, so the parser must look ahead to distinguish them.
-    pub fn parse_statement(&mut self) -> PResult<Statement> {
+    pub fn parse_statement(&mut self) -> Statement {
         match self.peek() {
             Token::If => self.parse_if(),
             Token::While => self.parse_while(),
@@ -428,110 +636,176 @@ impl<'a> Parser<'a> {
                     //
                     _ => {
                         // Assign or declaration
-                        let mut lvals = self.parse_lvals()?;
+                        let mut lvals = self.parse_lvals();
                         // If only one element and its declaratoin then we have a normal declaration and try to parse an initialzier
                         if lvals.len() == 1 && matches!(&lvals[0], LVal::V(_)) {
                             // parse initialzer
                             if let LVal::V(mut vd) = lvals.pop().unwrap() {
                                 let (init, init_span) = match self.peek() {
                                     Token::Equal => {
-                                        self.consume();
-                                        let expr = self.parse_expression(0)?;
+                                        let Some(_) = self.expect(Token::Equal) else {
+                                            return Statement {
+                                                kind: StatementKind::Error,
+                                                span: self.peek_span(),
+                                            };
+                                        };
+                                        let expr = self.parse_expression(0);
                                         let expr_span = expr.span.clone();
                                         (Some(expr), expr_span)
                                     }
                                     _ => (None, vd.span.clone()),
                                 };
-                                self.expect(Token::Semicolon)?;
+                                let Some(_) = self.expect(Token::Semicolon) else {
+                                    return Statement {
+                                        kind: StatementKind::Error,
+                                        span: self.peek_span(),
+                                    };
+                                };
 
                                 vd.init = init;
                                 // println!("Full Local : {:?}", vd);
                                 let vd_span = vd.span.clone();
                                 let kind = StatementKind::LocalDecl(vd);
-                                Ok(Statement {
+                                Statement {
                                     kind,
                                     span: vd_span.merge(&init_span),
-                                })
+                                }
                             } else {
                                 unreachable!("Should not be possible")
                             }
                         } else {
                             // Need to parse equal and rhs
-                            self.expect(Token::Equal)?;
+                            let Some(_) = self.expect(Token::Equal) else {
+                                return Statement {
+                                    kind: StatementKind::Error,
+                                    span: self.peek_span(),
+                                };
+                            };
                             // Relies on Semicolon
                             let rhs = self.parse_sep_list_comma(Token::Semicolon, |p| {
                                 p.parse_expression(0)
-                            })?;
-                            self.expect(Token::Semicolon)?;
-                            let span_start = lvals.first().unwrap().span();
+                            });
+                            if rhs.is_empty() {
+                                let found = self.peek().clone();
+                                self.push_unexpected_token(
+                                    "missing expression",
+                                    format!("expected expression after `=`, found {:?}", found),
+                                );
+                                return Statement {
+                                    kind: StatementKind::Error,
+                                    span: self.peek_span(),
+                                };
+                            }
+                            let Some(_) = self.expect(Token::Semicolon) else {
+                                return Statement {
+                                    kind: StatementKind::Error,
+                                    span: self.peek_span(),
+                                };
+                            };
+                            let span_start = lvals
+                                .first()
+                                .map(|l| l.span())
+                                .unwrap_or_else(|| self.peek_span());
                             let span_last = rhs.last().unwrap().span.clone();
                             let kind = StatementKind::Assign { lhs: lvals, rhs };
-                            Ok(Statement {
+                            Statement {
                                 kind,
                                 span: span_start.merge(&span_last),
-                            })
+                            }
                         }
                     }
                 }
             }
             // { block }
             Token::LBrace => {
-                let span_start = self.expect(Token::LBrace)?;
-                let block = self.parse_block()?;
-                let span_end = self.expect(Token::RBrace)?;
+                let Some(span_start) = self.expect(Token::LBrace) else {
+                    return Statement {
+                        kind: StatementKind::Error,
+                        span: self.peek_span(),
+                    };
+                };
+                let block = self.parse_block();
+                let Some(span_end) = self.expect(Token::RBrace) else {
+                    return Statement {
+                        kind: StatementKind::Error,
+                        span: self.peek_span(),
+                    };
+                };
                 // The lexer only inserts the terminating semicolon when a newline
                 // follows `}`, so in `} else {` there is none.
                 if *self.peek() != Token::Else {
-                    self.expect(Token::Semicolon)?;
+                    let Some(_) = self.expect(Token::Semicolon) else {
+                        return Statement {
+                            kind: StatementKind::Error,
+                            span: self.peek_span(),
+                        };
+                    };
                 }
                 let kind = StatementKind::Compound(Block { stmts: block });
-                Ok(Statement {
+                Statement {
                     kind,
                     span: span_start.merge(&span_end),
-                })
+                }
             }
             _ => {
                 // `.`, `(`, `[` and the binary operators can only continue an
                 // expression, so seeing one here means the previous line was
                 // ended by an inserted semicolon.
                 let tok = self.peek().clone();
+                let span = self.peek_span();
                 let continues_expr = self.peek_binop().is_some()
                     || matches!(tok, Token::Dot | Token::LParen | Token::LBrack);
-                let msg = if continues_expr {
-                    "A statement cannot start with this token. The line break above ended the \
-                     previous statement. To continue that expression instead, move this token \
-                     to the end of the previous line"
-                        .to_string()
-                } else {
-                    "Unexpected Token".to_string()
-                };
-                Err(ParserError::UnexpectedToken(msg, tok, self.peek_span()))
+                let mut diag = Diagnostic::error_with_label(
+                    span.clone(),
+                    "unexpected token at start of statement",
+                    format!("unexpected {:?}", tok),
+                );
+                if continues_expr {
+                    diag = diag.with_suggestion(
+                        "The line break above ended the previous statement. To continue that \
+                         expression instead, move this token to the end of the previous line",
+                    );
+                }
+                self.errors.push(diag);
+                Statement {
+                    kind: StatementKind::Error,
+                    span,
+                }
             }
         }
     }
 
-    fn parse_return(&mut self) -> PResult<Statement> {
-        let span_key = self.expect(Token::Return)?;
+    fn parse_return(&mut self) -> Statement {
+        let Some(span_key) = self.expect(Token::Return) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
         // Relies on Semicolon
-        let es = self.parse_sep_list_comma(Token::Semicolon, |p| p.parse_expression(0))?;
-        self.expect(Token::Semicolon)?;
+        let es = self.parse_sep_list_comma(Token::Semicolon, |p| p.parse_expression(0));
+        let Some(_) = self.expect(Token::Semicolon) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
         let kind = StatementKind::Return(es);
-        Ok(Statement {
+        Statement {
             kind,
             span: span_key,
-        })
+        }
     }
 
-    fn parse_lvals(&mut self) -> PResult<Vec<LVal>> {
+    fn parse_lvals(&mut self) -> Vec<LVal> {
         let ps = |p: &mut Self| {
             if p.peek_n(1) == Token::Colon {
                 // Found a var declaration
-                let decl = p.parse_local_decl()?;
-                Ok(decl)
+                p.parse_local_decl()
             } else {
-                // Hopefully assignable expression like a var or a[1]
-                let e = p.parse_expression(0)?;
-                Ok(LVal::E(e))
+                // Hopefully an assignable expression like a var or a[1]
+                let e = p.parse_expression(0);
+                LVal::E(e)
             }
         };
 
@@ -539,89 +813,126 @@ impl<'a> Parser<'a> {
     }
     // a : int b : int[2][] Local and array Declaration b : int[2] = "ab" allowed!
     // However, here we only parse b:int[2] since this can be part of an multi assignment or normal declaration
-    fn parse_local_decl(&mut self) -> PResult<LVal> {
-        let (name, span_name) = self.expect_id()?;
-        self.expect(Token::Colon)?;
-        let (base_ty, base_span) = self.parse_prim_type()?;
+    fn parse_local_decl(&mut self) -> LVal {
+        let Some((name, span_name)) = self.expect_id() else {
+            return LVal::Error(self.peek_span());
+        };
+        let Some(_) = self.expect(Token::Colon) else {
+            return LVal::Error(self.peek_span());
+        };
+        let (base_ty, base_span) = self.parse_prim_type();
+        let (var_type, dims, span_end) = self.parse_array_dims(base_ty, base_span);
 
-        // Check for array dimensions
-        let mut dims = Vec::new();
-        let mut span_end = base_span;
-        while *self.peek() == Token::LBrack {
-            self.consume(); // [
-            let dim_expr = if *self.peek() != Token::RBrack {
-                Some(self.parse_expression(0)?) // parse e.g. 3, n, etc.
-            } else {
-                None
-            };
-            span_end = self.expect(Token::RBrack)?;
-            dims.push(dim_expr);
-        }
-
-        // Base_ty + Number of dims = array type
-        let mut var_type = base_ty;
-        for _ in 0..dims.len() {
-            var_type = Type::Array {
-                elem_type: Box::new(var_type),
-            };
-        }
-
-        Ok(LVal::V(VarDeclaration {
+        LVal::V(VarDeclaration {
             name,
             init: None,
             var_type,
             dims,
             span: span_name.merge(&span_end),
-        }))
-    }
-
-    fn parse_procedure(&mut self) -> PResult<Statement> {
-        debug!("Parsing procedure");
-        let (name, span_name) = self.expect_id()?;
-        self.expect(Token::LParen)?;
-        let args = self.parse_sep_list_comma(Token::RParen, |p| p.parse_expression(0))?;
-        let span_end = self.expect(Token::RParen)?;
-        self.expect(Token::Semicolon)?;
-        let kind = StatementKind::Procedure { name, args };
-        Ok(Statement {
-            kind,
-            span: span_name.merge(&span_end),
         })
     }
 
-    fn parse_while(&mut self) -> PResult<Statement> {
-        let span_key = self.expect(Token::While)?;
-        let guard = self.parse_expression(0)?;
+    fn parse_procedure(&mut self) -> Statement {
+        debug!("Parsing procedure");
+        let Some((name, span_name)) = self.expect_id() else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let Some(_) = self.expect(Token::LParen) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let args = self.parse_sep_list_comma(Token::RParen, |p| p.parse_expression(0));
+        let Some(span_end) = self.expect(Token::RParen) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let Some(_) = self.expect(Token::Semicolon) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let kind = StatementKind::Procedure { name, args };
+        Statement {
+            kind,
+            span: span_name.merge(&span_end),
+        }
+    }
+
+    fn parse_while(&mut self) -> Statement {
+        let Some(span_key) = self.expect(Token::While) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let guard = self.parse_expression(0);
         // Consume optional semicolon that lexer inserted after single-line condition
         if *self.peek() == Token::Semicolon {
             self.consume();
         }
-        let body = Box::new(self.parse_statement()?);
+        let body = Box::new(self.parse_statement());
+        if matches!(body.kind, StatementKind::Error) {
+            self.syncronize_stmt(0);
+        }
         let kind = StatementKind::While { guard, body };
-        Ok(Statement {
+        Statement {
             kind,
             span: span_key,
-        })
+        }
     }
 
 
-    fn parse_do_while(&mut self) -> PResult<Statement> {
-        let span_key = self.expect(Token::Do)?;
 
-        let span_start = self.expect(Token::LBrace)?;
-        let body_stmts = self.parse_block()?;
-        let span_end = self.expect(Token::RBrace)?;
+    fn parse_do_while(&mut self) -> Statement {
+        let Some(span_key) = self.expect(Token::Do) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+
+        let Some(span_start) = self.expect(Token::LBrace) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let body_stmts = self.parse_block();
+        let Some(span_end) = self.expect(Token::RBrace) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
 
         // Consume optional semicolon that lexer inserted after closing brace newline
         if *self.peek() == Token::Semicolon {
             self.consume();
         }
 
-        let span_while = self.expect(Token::While)?;
-        let guard = self.parse_expression(0)?;
+        let Some(span_while) = self.expect(Token::While) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let guard = self.parse_expression(0);
 
         // Consume the terminating semicolon (explicit or inserted by newline)
-        let span_semi = self.expect(Token::Semicolon)?;
+        let Some(span_semi) = self.expect(Token::Semicolon) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
 
         let flag_name = format!("_do_flag_{}", span_key.start);
         let flag_decl = Statement {
@@ -697,54 +1008,87 @@ impl<'a> Parser<'a> {
         };
 
         // Outer complete block
-        let outer_block = Statement {
+        Statement {
             kind: StatementKind::Compound(Block {
                 stmts: vec![flag_decl, while_stmt],
             }),
             span: span_key.merge(&span_semi),
-        };
-
-        Ok(outer_block)
+        }
     }
 
-    fn parse_for(&mut self) -> PResult<Statement> {
-        let span_key = self.expect(Token::For)?;
-        
+    fn parse_for(&mut self) -> Statement {
+        let Some(span_key) = self.expect(Token::For) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+
         let init_tok = self.peek().clone();
-        let init = self.parse_statement()?;
+        let init = self.parse_statement();
 
         if !(matches!(init.kind, StatementKind::Assign { .. } | StatementKind::LocalDecl(_))) {
-            return Err(ParserError::UnexpectedToken(
-                "Expected assignment or declaration in for loop initializer".to_string(),
-                init_tok,
-                init.span,
-            ));
+            if matches!(init.kind, StatementKind::Error) {
+                self.syncronize_stmt(0);
+                if matches!(self.peek(), Token::RBrace) || self.is_eof() {
+                    return Statement {
+                        kind: StatementKind::Error,
+                        span: self.peek_span(),
+                    };
+                }
+            } else {
+                self.push_error(
+                    init.span.clone(),
+                    &init_tok,
+                    "invalid for-loop initializer",
+                    "expected assignment or declaration in for loop initializer",
+                );
+            }
         }
-        
-        let guard = self.parse_expression(0)?;
 
-        self.expect(Token::Semicolon)?;
+        let guard = self.parse_expression(0);
 
-        let step_lhs = self.parse_lvals()?;
+        let Some(_) = self.expect(Token::Semicolon) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+
+        let step_lhs = self.parse_lvals();
         if step_lhs.is_empty() {
-            return Err(ParserError::UnexpectedToken(
-                "Expected at least one l-value in for loop step".to_string(),
-                self.peek().clone(),
-                self.peek_span(),
-            ));
+            let found = self.peek().clone();
+            self.push_unexpected_token(
+                "invalid for-loop step",
+                format!("expected at least one l-value in for loop step, found {:?}", found),
+            );
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
         }
         if let Some(LVal::V(vd)) = step_lhs.iter().find(|l| matches!(l, LVal::V(_))) {
-            return Err(ParserError::UnexpectedToken(
-                "Variable declarations are not allowed in for loop step".to_string(),
-                Token::Colon,
+            self.push_error(
                 vd.span.clone(),
-            ));
+                &Token::Colon,
+                "invalid for-loop step",
+                "variable declarations are not allowed in for loop step",
+            );
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
         }
-        self.expect(Token::Equal)?;
-        let mut step_rhs = vec![self.parse_expression(0)?];
+        let Some(_) = self.expect(Token::Equal) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let mut step_rhs = vec![self.parse_expression(0)];
         while *self.peek() == Token::Comma && !self.is_eof() {
             self.consume();
-            step_rhs.push(self.parse_expression(0)?);
+            step_rhs.push(self.parse_expression(0));
         }
 
         // Consume optional semicolon that lexer inserted after single-line condition
@@ -753,14 +1097,18 @@ impl<'a> Parser<'a> {
         }
 
         if !(*self.peek() == Token::LBrace) {
-            return Err(ParserError::UnexpectedToken(
-                "Expected '{' after for loop header".to_string(),
-                self.peek().clone(),
-                self.peek_span(),
-            ));
+            let found = self.peek().clone();
+            self.push_unexpected_token(
+                "unexpected token",
+                format!("expected '{{' after for loop header, found {:?}", found),
+            );
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
         }
 
-        let body = self.parse_statement()?;
+        let body = self.parse_statement();
         let body_span = body.span.clone();
 
         let step_span = match (step_lhs.first(), step_rhs.last()) {
@@ -811,14 +1159,12 @@ impl<'a> Parser<'a> {
             span: span_key.merge(&body_span),
         };
 
-        let outer_block = Statement {
+        Statement {
             kind: StatementKind::Compound(Block {
                 stmts: vec![init, while_stmt],
             }),
             span: span_key.merge(&body_span),
-        };
-
-        Ok(outer_block)
+        }
     }
 
     fn stmt_always_returns(stmt: &Statement) -> bool {
@@ -836,17 +1182,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_if(&mut self) -> PResult<Statement> {
-        let span_key = self.expect(Token::If)?;
-        let guard = self.parse_expression(0)?;
+    fn parse_if(&mut self) -> Statement {
+        let Some(span_key) = self.expect(Token::If) else {
+            return Statement {
+                kind: StatementKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        let guard = self.parse_expression(0);
         // Consume optional semicolon that lexer inserted after single-line condition
         if *self.peek() == Token::Semicolon {
             self.consume();
         }
-        let then_br = Box::new(self.parse_statement()?);
+        let then_br = Box::new(self.parse_statement());
+        if matches!(then_br.kind, StatementKind::Error) {
+            self.syncronize_stmt(0);
+        }
         let else_br = if *self.peek() == Token::Else {
             self.consume();
-            Some(Box::new(self.parse_statement()?))
+            let br = Box::new(self.parse_statement());
+            if matches!(br.kind, StatementKind::Error) {
+                self.syncronize_stmt(0);
+            }
+            Some(br)
         } else {
             None
         };
@@ -855,10 +1213,10 @@ impl<'a> Parser<'a> {
             then_br,
             else_br,
         };
-        Ok(Statement {
+        Statement {
             kind,
             span: span_key,
-        })
+        }
     }
 
     /// Parses an expression using precedence climbing (Pratt parsing).
@@ -867,9 +1225,9 @@ impl<'a> Parser<'a> {
     /// Callers start with `0` for a full expression; recursive calls pass `prec + 1`
     /// to enforce left-to-right associativity.
     #[instrument(skip(self))]
-    pub fn parse_expression(&mut self, min_prec: usize) -> PResult<Expression> {
+    pub fn parse_expression(&mut self, min_prec: usize) -> Expression {
         debug!("Current Token : {}", self.peek());
-        let mut lhs = self.parse_unary()?;
+        let mut lhs = self.parse_unary();
 
         while let Some(op) = self.peek_binop() {
             let prec = self.binop_precedence(&op);
@@ -877,7 +1235,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.consume(); // consume operator
-            let rhs = self.parse_expression(prec + 1)?;
+            let rhs = self.parse_expression(prec + 1);
             let rhs_span = rhs.span.clone();
             let lhs_span = lhs.span.clone();
             let kind = ExpressionKind::Binary(op, Box::new(lhs), Box::new(rhs));
@@ -886,33 +1244,33 @@ impl<'a> Parser<'a> {
                 span: lhs_span.merge(&rhs_span),
             }
         }
-        Ok(lhs)
+        lhs
     }
     /// Parses a unary expression (`-x`, `!cond`).
     ///
     /// Unary operators bind tighter than any binary operator (precedence 10).
     /// If no unary operator is found, falls through to [`Self::parse_postfix`].
-    fn parse_unary(&mut self) -> PResult<Expression> {
+    fn parse_unary(&mut self) -> Expression {
         match self.peek() {
             Token::Minus => {
                 let (_, span_key) = self.consume();
-                let expr = self.parse_expression(10)?;
+                let expr = self.parse_expression(10);
                 let expr_span = expr.span.clone();
                 let kind = ExpressionKind::Unary(UnaryOp::Neg, Box::new(expr));
-                Ok(Expression {
+                Expression {
                     kind,
                     span: span_key.merge(&expr_span),
-                })
+                }
             }
             Token::Bang => {
                 let (_, span_key) = self.consume();
-                let expr = self.parse_expression(10)?;
+                let expr = self.parse_expression(10);
                 let expr_span = expr.span.clone();
                 let kind = ExpressionKind::Unary(UnaryOp::Not, Box::new(expr));
-                Ok(Expression {
+                Expression {
                     kind,
                     span: span_key.merge(&expr_span),
-                })
+                }
             }
             _ => self.parse_postfix(),
         }
@@ -922,16 +1280,21 @@ impl<'a> Parser<'a> {
     /// and function calls (`f(args)`).
     ///
     /// These can be chained arbitrarily, e.g. `a[1].field` or `matrix[i][j]`.
-    fn parse_postfix(&mut self) -> PResult<Expression> {
-        let mut expr = self.parse_primary()?;
+    fn parse_postfix(&mut self) -> Expression {
+        let mut expr = self.parse_primary();
         // loop for a[1].field etc.
         loop {
             match self.peek() {
                 //a[]
                 Token::LBrack => {
                     self.consume();
-                    let idx = self.parse_expression(0)?;
-                    let span_end = self.expect(Token::RBrack)?;
+                    let idx = self.parse_expression(0);
+                    let Some(span_end) = self.expect(Token::RBrack) else {
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            span: expr.span.clone(),
+                        };
+                    };
                     let expr_span = expr.span.clone();
                     let kind = ExpressionKind::Subscript(Box::new(expr), Box::new(idx));
                     expr = Expression {
@@ -942,7 +1305,12 @@ impl<'a> Parser<'a> {
                 // a.field
                 Token::Dot => {
                     self.consume();
-                    let (field, span_end) = self.expect_id()?;
+                    let Some((field, span_end)) = self.expect_id() else {
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            span: expr.span.clone(),
+                        };
+                    };
                     let expr_span = expr.span.clone();
                     let kind = ExpressionKind::Dot(Box::new(expr), field);
                     expr = Expression {
@@ -954,8 +1322,13 @@ impl<'a> Parser<'a> {
                 Token::LParen => {
                     self.consume();
                     let args =
-                        self.parse_sep_list_comma(Token::RParen, |p| p.parse_expression(0))?;
-                    let span_end = self.expect(Token::RParen)?;
+                        self.parse_sep_list_comma(Token::RParen, |p| p.parse_expression(0));
+                    let Some(span_end) = self.expect(Token::RParen) else {
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            span: expr.span.clone(),
+                        };
+                    };
                     if let ExpressionKind::Var(name) = expr.kind {
                         let kind = ExpressionKind::Call { name, args };
                         expr = Expression {
@@ -963,17 +1336,21 @@ impl<'a> Parser<'a> {
                             span: expr.span.merge(&span_end),
                         }
                     } else {
-                        return Err(ParserError::InvalidExpression(
-                            "Identifer Expected before Function Call".to_string(),
-                            expr.kind,
-                            expr.span,
+                        self.errors.push(Diagnostic::error_with_label(
+                            expr.span.clone(),
+                            "invalid function call target",
+                            "identifier expected before function call",
                         ));
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            span: expr.span
+                        };
                     }
                 }
                 _ => break,
             }
         }
-        Ok(expr)
+        expr
     }
 
     /// Tries to interpret the current token as a binary operator.
@@ -1015,40 +1392,43 @@ impl<'a> Parser<'a> {
     ///
     /// Used for function arguments, return values, and other comma-delimited sequences.
     /// The `end` token is **not** consumed.
-    fn parse_sep_list_comma<F, T>(&mut self, end: Token, mut f: F) -> PResult<Vec<T>>
+    fn parse_sep_list_comma<F, T>(&mut self, end: Token, mut f: F) -> Vec<T>
     where
-        F: FnMut(&mut Self) -> PResult<T>,
+        F: FnMut(&mut Self) -> T,
     {
         let mut elems = Vec::new();
-        if *self.peek() == end {
-            return Ok(elems);
+        if *self.peek() == end || self.is_eof() {
+            return elems;
         }
 
-        elems.push(f(self)?);
+        elems.push(f(self));
         while *self.peek() == Token::Comma && !self.is_eof() {
             self.consume();
-            let e = f(self)?;
+            if self.is_eof() {
+                break;
+            }
+            let e = f(self);
             elems.push(e);
             if *self.peek() == end {
                 break;
             }
         }
-        Ok(elems)
+        elems
     }
 
     /// Like [`Self::parse_sep_list_comma`] but allows a trailing comma before `end`.
-    fn parse_sep_list_comma_trailing<F, T>(&mut self, end: Token, mut f: F) -> PResult<Vec<T>>
+    fn parse_sep_list_comma_trailing<F, T>(&mut self, end: Token, mut f: F) -> Vec<T>
     where
-        F: FnMut(&mut Self) -> PResult<T>,
+        F: FnMut(&mut Self) -> T,
     {
         let mut elems = Vec::new();
 
         if *self.peek() == end {
-            return Ok(elems);
+            return elems;
         }
 
         while !self.is_eof() {
-            elems.push(f(self)?);
+            elems.push(f(self));
 
             if *self.peek() == Token::Comma {
                 self.consume();
@@ -1060,12 +1440,25 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(elems)
+        elems
     }
 
     /// Parses a primary (atomic) expression: literals, identifiers, parenthesized
     /// expressions, array literals (`{1, 2, 3}`), and string literals.
-    fn parse_primary(&mut self) -> PResult<Expression> {
+    fn parse_primary(&mut self) -> Expression {
+        if self.is_eof() {
+            let span = self.peek_span();
+            self.push_error(
+                span.clone(),
+                &Token::Eof,
+                "unexpected end of input",
+                "expected expression, found Eof",
+            );
+            return Expression {
+                kind: ExpressionKind::Error,
+                span,
+            };
+        }
         let (tok, span_tok) = self.consume();
         let (kind, span) = match tok {
             Token::Int(num) => (ExpressionKind::Int(num), span_tok),
@@ -1073,48 +1466,185 @@ impl<'a> Parser<'a> {
             Token::True => (ExpressionKind::Bool(true), span_tok),
             Token::False => (ExpressionKind::Bool(false), span_tok),
             Token::LParen => {
-                let expr = self.parse_expression(0)?;
-                let span_rparen = self.expect(Token::RParen)?;
+                let expr = self.parse_expression(0);
+                let Some(span_rparen) = self.expect(Token::RParen) else {
+                    return Expression {
+                        kind: ExpressionKind::Error,
+                        span: expr.span.clone(),
+                    };
+                };
                 (expr.kind, span_tok.merge(&span_rparen))
             }
             Token::LBrace => {
-                let expr = self.parse_array_literal()?;
+                let expr = self.parse_array_literal();
                 (expr.kind, expr.span.merge(&span_tok))
             }
-            Token::StringLiteral(lit) => (self.parse_string_literal(&lit), span_tok),
+            Token::StringLiteral(lit) => (
+                self.parse_string_literal(&lit, span_tok.clone()),
+                span_tok,
+            ),
             tok => {
-                return Err(ParserError::UnexpectedToken(
-                    "Primary Expression not possible!".to_string(),
-                    tok,
-                    span_tok,
-                ));
+                self.push_error(
+                    span_tok.clone(),
+                    &tok,
+                    "unexpected token in expression",
+                    format!("expected expression, found {:?}", tok),
+                );
+                return Expression {
+                    kind: ExpressionKind::Error,
+                    span: span_tok,
+                };
             }
         };
-        Ok(Expression { kind, span })
+        Expression { kind, span }
     }
 
-    fn parse_array_literal(&mut self) -> PResult<Expression> {
-        let elems = self.parse_sep_list_comma_trailing(Token::RBrace, |p| p.parse_expression(0))?;
-        let span_end = self.expect(Token::RBrace)?;
-        Ok(Expression {
+    fn parse_array_literal(&mut self) -> Expression {
+        let elems = self.parse_sep_list_comma_trailing(Token::RBrace, |p| p.parse_expression(0));
+        let Some(span_end) = self.expect(Token::RBrace) else {
+            return Expression {
+                kind: ExpressionKind::Error,
+                span: self.peek_span(),
+            };
+        };
+        Expression {
             kind: ExpressionKind::ArrayLit(elems),
             span: span_end,
-        })
+        }
     }
 
     /// Parses a string literal into an array of integer character codes.
     ///
     /// ETA represents strings as `int[]`, so `"Hello"` becomes
     /// `{72, 101, 108, 108, 111}`.
-    fn parse_string_literal(&mut self, lit: &str) -> ExpressionKind {
-        // Dummy span because makes no sense to have that internal
+    fn parse_string_literal(&mut self, lit: &str, span: Span) -> ExpressionKind {
         let elems = lit
             .chars()
             .map(|ch| Expression {
                 kind: ExpressionKind::Int(ch as i64),
-                span: logos::Span { start: 0, end: 0 },
+                span: span.clone(),
             })
             .collect();
         ExpressionKind::ArrayLit(elems)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_src(src: &str) -> (Program, Vec<Diagnostic>) {
+        let lexer = Lexer::new(src);
+        let mut parser = Parser::new(lexer);
+        parser.parse()
+    }
+
+    #[test]
+    fn eof_truncated_inputs_do_not_panic() {
+        for src in [
+            "main(",
+            "x:",
+            "main() { if",
+            "main() { x =",
+            "main() { x = 1 +",
+            "main() { a,",
+            "main() { a: int[",
+            "record R { x:",
+            "main(a: int,",
+        ] {
+            let (_prog, errors) = parse_src(src);
+            assert!(
+                !errors.is_empty(),
+                "expected at least one diagnostic for `{src}`"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_assignment_rhs_reports_error_without_panicking() {
+        let (_prog, errors) = parse_src("main() {\n    x = ;\n}\n");
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn syncronize_stmt_preserves_enclosing_rbrace() {
+        let (prog, errors) = parse_src(
+            "main() : int {\n    {\n        1, 2\n    }\n    return 0\n}\nfoo() : int {\n    return 1\n}\n",
+        );
+        assert!(!errors.is_empty());
+        assert_eq!(prog.decls.len(), 2);
+        assert!(matches!(prog.decls[0], Declaration::FunDecl(_)));
+        assert!(matches!(prog.decls[1], Declaration::FunDecl(_)));
+    }
+
+    #[test]
+    fn nested_error_in_if_or_while_does_not_duplicate_diagnostic() {
+        let (_prog, if_errs) = parse_src("main() : int {\n    if: int = 3\n    return 0\n}\n");
+        assert_eq!(if_errs.len(), 2, "got {if_errs:?}");
+
+        let (_prog, while_errs) = parse_src("main() : int {\n    while true\n        + 1\n    return 0\n}\n");
+        assert_eq!(while_errs.len(), 1, "got {while_errs:?}");
+    }
+
+    #[test]
+    fn for_error_init_does_not_emit_duplicate_initializer_error() {
+        let (_prog, errs) =
+            parse_src("main() {\n    for + 1; true; i = i + 1 {\n    }\n}\n");
+        assert_eq!(errs.len(), 1, "got {errs:?}");
+    }
+
+    #[test]
+    fn params_recovery_keeps_subsequent_params_and_body() {
+        let (prog, errs) = parse_src("foo(a, b: int) : int {\n    return b\n}\n");
+        assert_eq!(errs.len(), 1, "got {errs:?}");
+        match &prog.decls[0] {
+            Declaration::FunDecl(f) => {
+                assert_eq!(f.params.len(), 2);
+                assert_eq!(f.body.stmts.len(), 1);
+            }
+            other => panic!("expected FunDecl, got {other:?}"),
+        }
+
+        let (prog2, errs2) = parse_src("foo(a: ) : int {\n    return 0\n}\n");
+        assert_eq!(errs2.len(), 1, "got {errs2:?}");
+        match &prog2.decls[0] {
+            Declaration::FunDecl(f) => {
+                assert_eq!(f.params.len(), 1);
+                assert_eq!(f.body.stmts.len(), 1);
+            }
+            other => panic!("expected FunDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_members_push_member_error_and_recover() {
+        let (prog, errs) = parse_src("record P {\n    123: int\n    x: int = 5\n    y: int\n}\n");
+        assert!(!errs.is_empty());
+        match &prog.decls[0] {
+            Declaration::RecordDecl(r) => {
+                assert!(r.members.iter().any(|m| matches!(m, Member::Error)));
+                assert!(r.members.iter().any(|m| matches!(m, Member::Var(v) if v.name == "y")));
+            }
+            other => panic!("expected RecordDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_literal_elements_use_string_span() {
+        let (prog, errs) = parse_src("main() : int[] {\n    return \"hi\"\n}\n");
+        assert!(errs.is_empty(), "got {errs:?}");
+        match &prog.decls[0] {
+            Declaration::FunDecl(f) => match &f.body.stmts[0].kind {
+                StatementKind::Return(exprs) => match &exprs[0].kind {
+                    ExpressionKind::ArrayLit(elems) => {
+                        assert_eq!(elems.len(), 2);
+                        assert_eq!(elems[0].span, exprs[0].span);
+                    }
+                    other => panic!("expected ArrayLit, got {other:?}"),
+                },
+                other => panic!("expected Return, got {other:?}"),
+            },
+            other => panic!("expected FunDecl, got {other:?}"),
+        }
     }
 }

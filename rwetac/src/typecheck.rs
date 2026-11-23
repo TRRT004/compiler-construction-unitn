@@ -204,6 +204,7 @@ impl Typechecker {
             }
             Declaration::FunDecl(function) => self.typecheck_fun(function),
             Declaration::RecordDecl(rec) => self.check_record_cycles(rec),
+            Declaration::Error => todo!("Typechecking for Error Declaration is not implemented yet"),
         }
     }
 
@@ -226,7 +227,11 @@ impl Typechecker {
         // alignment, and the record's alignment is the widest of its fields.
         let mut align = 1;
 
-        for MemberDecl { name, t, span } in &rec.members {
+        for member in &rec.members {
+            let MemberDecl { name, t, span } = match member {
+                Member::Var(decl) => decl,
+                Member::Error => todo!("Typechecking for Error Member is not implemented yet"),
+            };
             if seen.contains(name) {
                 return Err(TypeError::Generic {
                     msg: format!("Duplicate member in Record {}", rec.tag),
@@ -327,8 +332,11 @@ impl Typechecker {
         );
         // Add parameters to Symbol Table and then check the body
         for (p, ty) in fun.params.iter().zip(params_t.iter()) {
-            self.symtab
-                .add_local_var(p.clone(), ty.clone(), Some(fun.span.clone()));
+            if let Some(p2) = p {
+                self.symtab.add_local_var(p2.clone(), ty.clone(), Some(fun.span.clone()));
+            } else {
+                continue;
+            }
         }
         // Add return type as tuple here!
         let tuple_ret_t = Type::Tuple {
@@ -505,6 +513,7 @@ impl Typechecker {
                     }),
                 }
             }
+            StatementKind::Error => todo!("Typechecking for Error StatementKind is not implemented yet"),
         }
     }
 
@@ -750,6 +759,7 @@ impl Typechecker {
                 );
                 Ok(vd.var_type.clone())
             }
+            LVal::Error(_span) => todo!("Typechecking for Error LVal is not implemented yet"),
         }
     }
 
@@ -1020,6 +1030,7 @@ fn is_lval(l: &LVal) -> bool {
             e.kind,
             ExpressionKind::Var(..) | ExpressionKind::Dot(..) | ExpressionKind::Subscript(..)
         ),
+        LVal::Error(_span) => todo!("Typechecking for Error LVal is not implemented yet"),
     }
 }
 

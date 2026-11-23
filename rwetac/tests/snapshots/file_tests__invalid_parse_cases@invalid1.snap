@@ -2,4 +2,16 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Eof! Message: Expected RBrace
+error: unexpected token
+  --> <input>:6:1
+  |
+6 | 
+  | ^ expected RBrace, found Eof
+  |
+
+error: unexpected token
+  --> <input>:6:1
+  |
+6 | 
+  | ^ expected RBrace, found Eof
+  |

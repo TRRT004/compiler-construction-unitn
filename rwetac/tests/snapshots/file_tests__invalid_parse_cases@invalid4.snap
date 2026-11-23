@@ -2,4 +2,17 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Semicolon! Message: Expected LBrace. Note the line break here was turned into a statement separator, so this `;` is not in the source. If this line was meant to continue the previous one, end the previous line with the operator or comma
+error: unexpected token
+  --> <input>:1:26
+  |
+1 | main(args: int[][]): int
+  |                          ^ expected LBrace, found Semicolon
+  |
+  = help: Note: the line break here was turned into a statement separator, so this `;` is not in the source. If this line was meant to continue the previous one, end the previous line with the operator or comma
+
+error: invalid declaration
+  --> <input>:2:5
+  |
+2 |     return 0  // ← body must be in braces
+  |     ^^^^^^ not a valid declaration, found Return
+  |

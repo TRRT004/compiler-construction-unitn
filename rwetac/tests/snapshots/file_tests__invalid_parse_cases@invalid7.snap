@@ -2,4 +2,16 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Return! Message: Primary Expression not possible!
+error: unexpected token in expression
+  --> <input>:2:14
+  |
+2 |     x: int = return 5  // ← return can’t be used as an expression
+  |              ^^^^^^ expected expression, found Return
+  |
+
+error: unexpected token
+  --> <input>:2:21
+  |
+2 |     x: int = return 5  // ← return can’t be used as an expression
+  |                     ^ expected Semicolon, found Int(5)
+  |

@@ -2,4 +2,9 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Colon! Message: Expected RParen
+error: unexpected token
+  --> <input>:1:19
+  |
+1 | main(args: int[][]: int {
+  |                   ^ expected RParen, found Colon
+  |

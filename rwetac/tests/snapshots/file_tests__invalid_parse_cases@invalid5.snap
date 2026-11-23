@@ -2,4 +2,16 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Asterisk! Message: Primary Expression not possible!
+error: unexpected token in expression
+  --> <input>:2:17
+  |
+2 |     x: int = 1 ** 2  // ← '**' not valid in Eta
+  |                 ^ expected expression, found Asterisk
+  |
+
+error: unexpected token
+  --> <input>:2:19
+  |
+2 |     x: int = 1 ** 2  // ← '**' not valid in Eta
+  |                   ^ expected Semicolon, found Int(2)
+  |

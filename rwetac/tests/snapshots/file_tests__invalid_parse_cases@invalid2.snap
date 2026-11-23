@@ -2,4 +2,16 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Colon! Message: Primary Expression not possible!
+error: unexpected token in expression
+  --> <input>:2:7
+  |
+2 |     if: int = 3  // ← 'if' is a keyword
+  |       ^ expected expression, found Colon
+  |
+
+error: unexpected token at start of statement
+  --> <input>:2:9
+  |
+2 |     if: int = 3  // ← 'if' is a keyword
+  |         ^^^ unexpected TInt
+  |

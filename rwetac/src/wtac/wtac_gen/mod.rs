@@ -250,6 +250,9 @@ impl WtacGen {
                     v: val,
                 }
             }
+            ast::Declaration::Error => {
+                panic!("Internal Error: Error Declaration should not be present in AST")
+            }
         }
     }
 
@@ -281,16 +284,23 @@ impl WtacGen {
         // Return a Pointer which is added as the first argument! Function then
         // returns nothing
         let mut ret_ptr_v = None;
+        let params: Vec<String> = fun
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| p.clone().unwrap_or_else(|| format!("_p{i}")))
+            .collect();
+
         let (new_p_t, new_ret_t, new_params) = match &ret_type[..] {
-            [] => (w_p_t, None, fun.params.clone()),
+            [] => (w_p_t, None, params),
             [r_t] if !matches!(r_t, Type::Record(_)) => {
-                (w_p_t, Some(convert_type(r_t)), fun.params.clone())
+                (w_p_t, Some(convert_type(r_t)), params)
             }
             rs => {
                 let ret_ptr = self.make_ret_ptr(Type::Tuple { elems: rs.to_vec() });
                 ret_ptr_v = Some(W::Value::Var(ret_ptr.clone()));
                 w_p_t.insert(0, W::WType::I32); // Pointer to front
-                let mut new_params = fun.params.clone();
+                let mut new_params = params;
                 new_params.insert(0, ret_ptr);
                 (w_p_t, None, new_params)
             }

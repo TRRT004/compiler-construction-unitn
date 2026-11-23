@@ -120,7 +120,8 @@ fn rec_load_store() {
     }"#;
     let lexer = lexer::Lexer::new(input);
     let mut parser = parser::Parser::new(lexer);
-    let ast = parser.parse().unwrap();
+    let (ast, errors) = parser.parse();
+    assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
 
     let mut tchecker = Typechecker::new();
     let members = vec![

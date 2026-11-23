@@ -84,13 +84,11 @@ pub fn compile(
     //     }
     // }
     let source_map = SourceMap::new(input.clone());
-    let mut ast = {
+    // todo!("Use parse_errors to print errors with source locations");
+    let (mut ast, _parse_errors) = {
         let _parse_span = span!(Level::INFO, "Parsing").entered();
         let mut parser = parser::Parser::new(lexer);
-        parser.parse().map_err(|e| {
-            let (line, col) = source_map.get_span_location(e.span());
-            anyhow::anyhow!("Parsing failed at {}:{}. {}", line, col, e)
-        })?
+        parser.parse()
     };
     if stage == Stage::Parse {
         println!("{:?}", ast);

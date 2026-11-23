@@ -2,4 +2,10 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token LParen! Message: A statement cannot start with this token. The line break above ended the previous statement. To continue that expression instead, move this token to the end of the previous line
+error: unexpected token at start of statement
+  --> <input>:3:5
+  |
+3 |     (1)
+  |     ^ unexpected LParen
+  |
+  = help: The line break above ended the previous statement. To continue that expression instead, move this token to the end of the previous line

@@ -8,7 +8,8 @@ use rwetac::{lexer, parser, resolver, typecheck};
 /// Resolves and typechecks `src`. `Err` holds the first message.
 fn check(src: &str) -> Result<(), String> {
     let mut parser = parser::Parser::new(lexer::Lexer::new(src));
-    let mut ast = parser.parse_program().expect("test program must parse");
+    let (mut ast, errors) = parser.parse_program();
+    assert!(errors.is_empty(), "test program must parse: {errors:?}");
     resolver::Resolver::new()
         .resolve(&mut ast)
         .map_err(|e| format!("resolve: {}", e.msg))?;

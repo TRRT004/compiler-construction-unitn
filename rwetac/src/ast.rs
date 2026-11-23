@@ -105,6 +105,8 @@ pub enum LVal {
     V(VarDeclaration),
     /// An assignable expression (variable, subscript, or field access).
     E(Expression),
+    /// Poison node used for error recovery during parsing and downstream passes.
+    Error(logos::Span),
 }
 
 impl LVal {
@@ -112,6 +114,7 @@ impl LVal {
         match self {
             LVal::V(vd) => vd.span.clone(),
             LVal::E(e) => e.span.clone(),
+            LVal::Error(span) => span.clone(),
         }
     }
 }
@@ -138,7 +141,7 @@ pub enum StatementKind {
     Compound(Block),
 
     /// An `if` statement with an optional `else` branch.
-    If {    
+    If {
         guard: Expression,
         then_br: Box<Statement>,
         else_br: Option<Box<Statement>>,
@@ -152,6 +155,9 @@ pub enum StatementKind {
 
     /// A procedure call (function call used as a statement, result discarded).
     Procedure { name: String, args: Vec<Expression> },
+
+    /// A poison node used for error recovery during parsing and downstream passes.
+    Error,
 }
 
 /// A statement node with source span information.
@@ -172,7 +178,7 @@ pub struct Block {
 pub struct Function {
     pub name: String,
     /// Parameter names. Their types are encoded in `f_type`.
-    pub params: Vec<String>,
+    pub params: Vec<Option<String>>,
     /// The full function type, including parameter and return types.
     pub f_type: Type,
     pub body: Block,
@@ -185,6 +191,13 @@ pub struct MemberDecl {
     pub name: String,
     pub t: Type,
     pub span: Span,
+}
+
+/// A member of a record type, which can be either a variable declaration or an error node.
+#[derive(Debug)]
+pub enum Member {
+    Var(MemberDecl),
+    Error,
 }
 
 /// A record type declaration. Members are separated by newlines, not commas,
@@ -200,7 +213,7 @@ pub struct MemberDecl {
 pub struct Record {
     /// The name of the record type.
     pub tag: String,
-    pub members: Vec<MemberDecl>,
+    pub members: Vec<Member>,
     pub span: Span,
 }
 
@@ -213,6 +226,8 @@ pub enum Declaration {
     FunDecl(Function),
     /// A record type definition.
     RecordDecl(Record),
+    /// A poison node used for error recovery during parsing and downstream passes.
+    Error,
 }
 
 /// The root node of the AST, representing an entire source file.

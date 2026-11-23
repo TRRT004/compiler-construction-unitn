@@ -3,12 +3,18 @@ use std::{fs, path::Path};
 use rwetac::{lexer, parser, resolver, typecheck};
 
 fn run_invalid_case(src: &str) -> String {
+    let sm = rwetac::source_map::SourceMap::new(src.to_string());
     let lexer = lexer::Lexer::new(src);
     let mut parser = parser::Parser::new(lexer);
-    match parser.parse_program() {
-        Ok(_) => panic!("Parsing succeeded unexpectedly"),
-        Err(e) => format!("Failure: {}", e),
+    let (_, errors) = parser.parse_program();
+    if errors.is_empty() {
+        panic!("Parsing succeeded unexpectedly");
     }
+    errors
+        .iter()
+        .map(|d| d.render(&sm, None, false))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn run_invalid_case_type(src: &str) -> String {
@@ -16,7 +22,8 @@ fn run_invalid_case_type(src: &str) -> String {
     let mut parser = parser::Parser::new(lexer);
     let mut resolver = resolver::Resolver::new();
     let mut tchecker = typecheck::Typechecker::new();
-    let mut ast = parser.parse_program().unwrap();
+    let (mut ast, errors) = parser.parse_program();
+    assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
     match resolver.resolve(&mut ast) {
         Ok(_) => (),
         Err(e) => return format!("Failure: {}", e.msg),

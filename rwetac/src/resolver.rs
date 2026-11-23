@@ -241,6 +241,7 @@ impl Resolver {
                     },
                 ),
             },
+            Declaration::Error => todo!("Implementation for Error Declaration is not done yet"),
         }
         Ok(())
     }
@@ -265,6 +266,7 @@ impl Resolver {
             },
             Declaration::FunDecl(fun) => self.resolve_function(fun)?,
             Declaration::RecordDecl(record) => self.resolve_record(record)?,
+            Declaration::Error => todo!("Implementation for Error Declaration is not done yet"),
         }
         Ok(())
     }
@@ -273,7 +275,11 @@ impl Resolver {
     pub fn resolve_function(&mut self, fun: &mut Function) -> ResolveResult {
         self.scope_map.push();
         for p in &mut fun.params {
-            *p = self.add_local_var(p, &fun.span)?
+            if let Some(p_2) = p {
+                *p = Some(self.add_local_var(p_2, &fun.span)?);
+            } else {
+                continue;
+            }
         }
         self.scope_map.push(); // Scope for body
         fun.body
@@ -340,6 +346,7 @@ impl Resolver {
                 self.resolve_local_var_declaration(vd)?;
             }
             LVal::E(e) => self.resolve_expr(e)?,
+            LVal::Error(_span) => todo!("Resolution for Error LVal is not implemented yet"),
         }
         Ok(())
     }
@@ -406,6 +413,7 @@ impl Resolver {
                 }
                 args.iter_mut().try_for_each(|e| self.resolve_expr(e))?;
             }
+            StatementKind::Error => todo!("Resolution for Error Statement is not implemented yet"),
         }
         Ok(())
     }

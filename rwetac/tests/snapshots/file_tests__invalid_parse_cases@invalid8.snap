@@ -2,4 +2,16 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Unexpected Token Var("world")! Message: Expected Semicolon
+error: unexpected token
+  --> <input>:2:23
+  |
+2 |     s: int[] = "Hello"world"  // ← broken string literal
+  |                       ^^^^^ expected Semicolon, found Var("world")
+  |
+
+error: unexpected token
+  --> <input>:4:2
+  |
+4 | }
+  |  ^ expected RBrace, found Eof
+  |
