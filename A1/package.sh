@@ -43,10 +43,13 @@ resolver = "3"
 license = "MIT"
 EOF
 
-# 3. Copy A1/src/main.rs to top-level src/main.rs, A1/README.md to README.md, and A1/examples/* to examples/
+# 3. Copy A1/src/main.rs to top-level src/main.rs, A1/README.md to README.md, A1/assignment_1.pdf to assignment_1.pdf, and A1/examples/* to examples/
 mkdir -p "$STAGE_DIR/src"
 cp -a "$SCRIPT_DIR/src/main.rs" "$STAGE_DIR/src/main.rs"
 cp -a "$SCRIPT_DIR/README.md" "$STAGE_DIR/README.md"
+if [ -f "$SCRIPT_DIR/assignment_1.pdf" ]; then
+    cp -a "$SCRIPT_DIR/assignment_1.pdf" "$STAGE_DIR/assignment_1.pdf"
+fi
 
 # Dereference symlinks (-L) so examples/* are standalone files that work on all OSes (Windows/macOS/Linux)
 cp -rL "$SCRIPT_DIR/examples" "$STAGE_DIR/examples"
@@ -55,7 +58,7 @@ cp -rL "$SCRIPT_DIR/examples" "$STAGE_DIR/examples"
 rm -f "$OUT_ZIP"
 (
     cd "$STAGE_DIR"
-    zip -r -q "$OUT_ZIP" README.md runtime rwetac src examples Cargo.toml Cargo.lock architecture.md
+    zip -r -q "$OUT_ZIP" README.md runtime rwetac src examples Cargo.toml Cargo.lock architecture.md assignment_1.pdf
 )
 
 echo "Created zip archive at: $OUT_ZIP"
