@@ -1383,3 +1383,92 @@ fn binop_str(op: &BinOp) -> &'static str {
         BinOp::Neq => "!=",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{lexer::Lexer, parser::Parser, resolver::Resolver};
+
+    fn run_typecheck(src: &str) -> Vec<Diagnostic> {
+        let mut parser = Parser::new(Lexer::new(src));
+        let (mut prog, _parse_errors) = parser.parse();
+        let _resolve_errors = Resolver::new().resolve(&mut prog);
+        let mut tc = Typechecker::new();
+        let _ = tc.typecheck(&prog);
+        tc.diagnostics
+    }
+
+    #[test]
+    fn poisoned_parse_and_resolve_nodes_emit_no_typecheck_errors() {
+        let diags = run_typecheck(
+            "record BrokenRec {
+                ok_field: int
+                : int
+            }
+            f(a: int, a: int): int {
+                x: int = 1 + * 2
+                if (* 3) {}
+                y: int = undefined_var + 10
+                if undefined_bool {}
+                arr: int[] = {1, 2, 3}
+                z: int = arr[undefined_idx]
+                x: int = 99
+                x: int, w: int = 1, 2
+                missing_proc(undefined_arg)
+                return missing_fn(1)
+            }",
+        );
+        assert!(
+            diags.is_empty(),
+            "expected no cascaded typecheck diagnostics, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn type_error_poisoning_suppresses_cascades_and_accumulates_real_errors() {
+        let diags = run_typecheck(
+            "f(): int {
+                x: int = (1 + true) + 5
+                if (1 + false) {}
+                y: bool = 42
+                return true
+            }",
+        );
+        // 4 type errors: `1 + true`, `1 + false`, `y: bool = 42`, and `return true`.
+        // `+ 5`, `x: int = ...`, and `if (...)` should not emit a cascaded type error.
+        assert_eq!(diags.len(), 4, "got diagnostics: {diags:?}");
+    }
+
+    #[test]
+    fn secondary_spans_attached_for_vars_params_records_and_functions() {
+        let src = "
+            record Point {
+                x: int
+            }
+            add(a: int, b: int): int {
+                if a {}
+                p: Point = Point(1, 2)
+                p.x = true
+                return true
+            }
+        ";
+        let diags = run_typecheck(src);
+        assert_eq!(diags.len(), 4, "got diagnostics: {diags:?}");
+
+        // 1. `if a {}` -> secondary span points to parameter `a: int`
+        assert_eq!(diags[0].secondary.len(), 1);
+        assert_eq!(&src[diags[0].secondary[0].span.clone()], "a: int");
+
+        // 2. `Point(1,2)` -> wrong arg count -> secondary span points to `record Point`
+        assert_eq!(diags[1].secondary.len(), 1);
+        assert_eq!(&src[diags[1].secondary[0].span.clone()], "record Point");
+
+        // 3. `p.x = true` -> secondary span points to record field `x: int`
+        assert_eq!(diags[2].secondary.len(), 1);
+        assert_eq!(&src[diags[2].secondary[0].span.clone()], "x: int");
+
+        // 4. `return true` -> secondary span points to function `add`
+        assert_eq!(diags[3].secondary.len(), 1);
+        assert_eq!(&src[diags[3].secondary[0].span.clone()], "add");
+    }
+}
