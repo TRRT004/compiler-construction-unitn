@@ -24,9 +24,9 @@ fn run_invalid_case_type(src: &str) -> String {
     let mut tchecker = typecheck::Typechecker::new();
     let (mut ast, errors) = parser.parse_program();
     assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
-    match resolver.resolve(&mut ast) {
-        Ok(_) => (),
-        Err(e) => return format!("Failure: {}", e.msg),
+    let resolution_errors = resolver.resolve(&mut ast);
+    if let Some(e) = resolution_errors.first() {
+        return format!("Failure: {}", e.message);
     }
     match tchecker.typecheck(&ast) {
         Ok(_) => panic!("Typechecking succeeded unexpectedly"),

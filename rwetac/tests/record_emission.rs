@@ -27,9 +27,11 @@ fn layout_of(src: &str, tag: &str) -> Layout {
     let mut parser = parser::Parser::new(lexer);
     let (mut ast, errors) = parser.parse_program();
     assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
-    if let Err(e) = Resolver::new().resolve(&mut ast) {
-        panic!("resolve failed: {}", e.msg);
-    }
+    let resolve_errors = Resolver::new().resolve(&mut ast);
+    assert!(
+        resolve_errors.is_empty(),
+        "unexpected resolve errors: {resolve_errors:?}"
+    );
     let mut tchecker = Typechecker::new();
     tchecker.typecheck(&ast).expect("typecheck failed");
 

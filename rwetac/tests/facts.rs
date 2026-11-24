@@ -13,7 +13,7 @@ fn cfgs_for(src: &str) -> Vec<Cfg> {
     let mut parser = rwetac::parser::Parser::new(lexer);
     let (mut ast, errors) = parser.parse();
     assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
-    Resolver::new().resolve(&mut ast).ok();
+    Resolver::new().resolve(&mut ast).is_empty().then_some(()).expect("unexpected resolution errors");
     let mut tc = Typechecker::new();
     tc.typecheck(&ast).expect("typecheck failed");
     let prog = WtacGen::new(tc).generate(ast);

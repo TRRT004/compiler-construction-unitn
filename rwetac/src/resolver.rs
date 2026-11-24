@@ -18,29 +18,14 @@
 //! This is a precondition for the [`Typechecker`](crate::typecheck::Typechecker) and
 //! the [`SymbolTable`](crate::symbols::SymbolTable), which use a flat namespace.
 
+use crate::diagnostic::Diagnostic;
 use std::collections::HashMap;
 use std::fmt;
 
+use logos::Span;
 use tracing::{debug, trace};
 
 use crate::ast::*;
-
-/// An error produced during resolution.
-#[derive(Debug)]
-pub struct ResolveError {
-    pub msg: String,
-    pub span: logos::Span,
-}
-
-impl fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.msg)
-    }
-}
-
-impl std::error::Error for ResolveError {}
-
-type ResolveResult = Result<(), ResolveError>;
 
 /// An entry in the [`StackMap`], recording the unique name assigned to an identifier.
 #[derive(Debug)]
@@ -166,6 +151,7 @@ pub struct Resolver {
     pub scope_map: StackMap,
     // Local to this resolver, so renaming is reproducible across runs.
     next_id: usize,
+    errors: Vec<Diagnostic>,
 }
 
 impl Default for Resolver {
@@ -179,7 +165,24 @@ impl Resolver {
         Resolver {
             scope_map: StackMap::new(),
             next_id: 0,
+            errors: Vec::new(),
         }
+    }
+
+    /// Returns the diagnostics accumulated so far during resolution.
+    pub fn errors(&self) -> &[Diagnostic] {
+        &self.errors
+    }
+
+    /// Records a [`Diagnostic`] at `span`.
+    fn push_error(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        label: impl Into<String>,
+    ) {
+        let diag = Diagnostic::error_with_label(span, message, label);
+        self.errors.push(diag);
     }
 
     /// Resolves all names in a program, mutating the AST in place.
@@ -187,11 +190,8 @@ impl Resolver {
     /// Top-level functions and records are registered first (so they can
     /// reference each other), then each body is resolved.
     ///
-    /// # Errors
-    ///
-    /// Returns a [`ResolveError`] if a variable is used before declaration,
-    /// or if a name is declared twice in the same scope.
-    pub fn resolve(&mut self, p: &mut Program) -> ResolveResult {
+    /// Returns a vector of [`Diagnostic`]s for any errors encountered during resolution.
+    pub fn resolve(&mut self, p: &mut Program) -> Vec<Diagnostic> {
         // Add length function here
         self.scope_map.add(
             "length".to_string(),
@@ -201,22 +201,25 @@ impl Resolver {
             },
         );
         p.decls
-            .iter()
-            .try_for_each(|d| self.resolve_only_top_level(d))?;
+            .iter_mut()
+            .for_each(|d| self.resolve_only_top_level(d));
         debug!(scope_map = %self.scope_map, "Resolved Top Level");
-        p.decls.iter_mut().try_for_each(|d| self.resolve_decl(d))
+        p.decls.iter_mut().for_each(|d| self.resolve_decl(d));
+        self.errors.clone()
     }
 
     /// Registers top-level function and record names without resolving their bodies.
-    fn resolve_only_top_level(&mut self, decl: &Declaration) -> ResolveResult {
+    fn resolve_only_top_level(&mut self, decl: &mut Declaration) {
         match decl {
             Declaration::Global(_) => (),
             Declaration::FunDecl(fun) => match self.scope_map.find(&fun.name) {
                 Some(_) => {
-                    return Err(ResolveError {
-                        msg: format!("Function {} was already defined", fun.name),
-                        span: fun.span.clone(),
-                    });
+                    self.push_error(
+                        fun.span.clone(),
+                        format!("Function {} was already defined", fun.name),
+                        "Function already defined",
+                    );
+                    *decl = Declaration::Error;
                 }
                 None => self.scope_map.add(
                     fun.name.clone(),
@@ -228,10 +231,12 @@ impl Resolver {
             },
             Declaration::RecordDecl(record) => match self.scope_map.find(&record.tag) {
                 Some(_) => {
-                    return Err(ResolveError {
-                        msg: format!("Record {} was already defined", record.tag),
-                        span: record.span.clone(),
-                    });
+                    self.push_error(
+                        record.span.clone(),
+                        format!("Record {} was already defined", record.tag),
+                        "Record already defined",
+                    );
+                    *decl = Declaration::Error;
                 }
                 None => self.scope_map.add(
                     record.tag.clone(),
@@ -241,20 +246,21 @@ impl Resolver {
                     },
                 ),
             },
-            Declaration::Error => todo!("Implementation for Error Declaration is not done yet"),
+            Declaration::Error => (), // Poison node from parser recovery; its error was already reported by the parser.
         }
-        Ok(())
     }
 
     /// Resolves a single declaration (global, function, or record).
-    pub fn resolve_decl(&mut self, decl: &mut Declaration) -> ResolveResult {
+    pub fn resolve_decl(&mut self, decl: &mut Declaration) {
         match decl {
             Declaration::Global(vd) => match self.scope_map.find_curr(&vd.name) {
                 Some(entry) => {
-                    return Err(ResolveError {
-                        msg: format!("Global {} already exists! Entry : {:?}", vd.name, entry),
-                        span: vd.span.clone(),
-                    });
+                    self.push_error(
+                        vd.span.clone(),
+                        format!("Global {} already exists! Entry: {:?}", vd.name, entry),
+                        "Global variable already exists",
+                    );
+                    *decl = Declaration::Error;
                 }
                 None => self.scope_map.add(
                     vd.name.clone(),
@@ -264,54 +270,45 @@ impl Resolver {
                     },
                 ),
             },
-            Declaration::FunDecl(fun) => self.resolve_function(fun)?,
-            Declaration::RecordDecl(record) => self.resolve_record(record)?,
-            Declaration::Error => todo!("Implementation for Error Declaration is not done yet"),
+            Declaration::FunDecl(fun) => self.resolve_function(fun),
+            Declaration::RecordDecl(record) => self.resolve_record(record),
+            Declaration::Error => (), // Poison node from parser recovery; its error was already reported by the parser.
         }
-        Ok(())
     }
 
     /// Resolves a function: opens a new scope, renames parameters, then resolves the body.
-    pub fn resolve_function(&mut self, fun: &mut Function) -> ResolveResult {
+    pub fn resolve_function(&mut self, fun: &mut Function) {
         self.scope_map.push();
         for p in &mut fun.params {
-            if let Some(p_2) = p {
-                *p = Some(self.add_local_var(p_2, &fun.span)?);
-            } else {
-                continue;
+            if let Some(name) = p.take() {
+                *p = self.add_local_var(&name, &fun.span);
             }
         }
         self.scope_map.push(); // Scope for body
         fun.body
             .stmts
             .iter_mut()
-            .try_for_each(|s| self.resolve_stmt(s))?;
+            .for_each(|s| self.resolve_stmt(s));
         self.scope_map.pop(); // body
         self.scope_map.pop(); // parameters
-        Ok(())
     }
 
     /// Resolves a record declaration.
-    pub fn resolve_record(&mut self, rec: &mut Record) -> ResolveResult {
+    pub fn resolve_record(&mut self, rec: &mut Record) {
         let resolve_member = |_m| {
             //  I do not think we need to do anything here
-            Ok(())
         };
-        rec.members.iter_mut().try_for_each(resolve_member)
+        rec.members.iter_mut().for_each(resolve_member)
     }
 
     /// Adds a local variable to the current scope with a fresh unique name.
     ///
-    /// # Errors
-    ///
-    /// Returns a [`ResolveError`] if the name already exists in the current scope.
-    fn add_local_var(&mut self, name: &str, span: &logos::Span) -> Result<String, ResolveError> {
+    /// Returns the unique name if successful, or `None` if the variable already exists in the current scope.
+    fn add_local_var(&mut self, name: &str, span: &logos::Span) -> Option<String> {
         // Check if var is already defined
         if self.scope_map.find_curr(name).is_some() {
-            return Err(ResolveError {
-                msg: format!("Duplicate Variable {} found!", name),
-                span: span.clone(),
-            });
+            self.push_error(span.clone(), format!("Duplicate Variable {} found!", name), "Variable already exists");
+            return None;
         }
 
         let unique_name = format!("{}.{}", name, self.next_id);
@@ -323,57 +320,92 @@ impl Resolver {
                 global: false,
             },
         );
-        Ok(unique_name)
+        Some(unique_name)
     }
 
     /// Resolves a local variable declaration, including its initializer if present.
     ///
     /// The initializer is resolved *before* the name is added to the scope,
-    /// so `x: int = x` refers to an outer `x`, not itself.
-    fn resolve_local_var_declaration(&mut self, vd: &mut VarDeclaration) -> ResolveResult {
+    /// so `x: int = x` refers to an outer `x`, not itself. Returns `false` if
+    /// the name is already declared in the current scope.
+    fn resolve_local_var_declaration(&mut self, vd: &mut VarDeclaration) -> bool {
         if let Some(e) = vd.init.as_mut() {
-            self.resolve_expr(e)?
+            self.resolve_expr(e)
         }
-        let unique_name = self.add_local_var(&vd.name, &vd.span)?;
-        vd.name = unique_name;
-        Ok(())
+        match self.add_local_var(&vd.name, &vd.span) {
+            Some(unique_name) => {
+                vd.name = unique_name;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Resolves the left-hand side of an assignment.
-    pub fn resolve_lval(&mut self, lval: &mut LVal) -> ResolveResult {
+    pub fn resolve_lval(&mut self, lval: &mut LVal) {
         match lval {
             LVal::V(vd) => {
-                self.resolve_local_var_declaration(vd)?;
+                let span = vd.span.clone();
+                if !self.resolve_local_var_declaration(vd) {
+                    *lval = LVal::Error(span);
+                }
             }
-            LVal::E(e) => self.resolve_expr(e)?,
-            LVal::Error(_span) => todo!("Resolution for Error LVal is not implemented yet"),
+            LVal::E(e) => self.resolve_expr(e),
+            LVal::Error(_span) => (), // Poison node from parser recovery; its error was already reported by the parser.
         }
-        Ok(())
+    }
+
+    /// Resolves a function or procedure invocation and its arguments.
+    ///
+    /// Returns `false` if `name` was not declared, so the caller can poison the node.
+    fn resolve_invocation(
+        &mut self,
+        name: &mut String,
+        args: &mut [Expression],
+        span: &Span,
+        is_procedure: bool,
+    ) -> bool {
+        let found = if let Some(entry) = self.scope_map.find(name) {
+            *name = entry.unique_name.clone();
+            true
+        } else {
+            let (msg, label) = if is_procedure {
+                (
+                    format!("Procedure {} not declared", name),
+                    "Procedure not declared",
+                )
+            } else {
+                (
+                    format!("Function {} was not declared!", name),
+                    "Function not declared",
+                )
+            };
+            self.push_error(span.clone(), msg, label);
+            false
+        };
+        args.iter_mut().for_each(|arg| self.resolve_expr(arg));
+        found
     }
 
     /// Resolves a statement, opening new scopes for compound blocks.
-    pub fn resolve_stmt(&mut self, s: &mut Statement) -> ResolveResult {
+    pub fn resolve_stmt(&mut self, s: &mut Statement) {
         match &mut s.kind {
-            StatementKind::LocalDecl(vd) if vd.dims.is_empty() => {
-                self.resolve_local_var_declaration(vd)?;
-            }
-            // Array decl
             StatementKind::LocalDecl(vd) => {
-                self.resolve_local_var_declaration(vd)?;
-
-                vd.dims.iter_mut().try_for_each(|e_opt| {
+                let ok = self.resolve_local_var_declaration(vd);
+                vd.dims.iter_mut().for_each(|e_opt| {
                     if let Some(e) = e_opt {
                         self.resolve_expr(e)
-                    } else {
-                        Ok(())
                     }
-                })?;
+                });
+                if !ok {
+                    s.kind = StatementKind::Error;
+                }
             }
-            StatementKind::Return(es) => es.iter_mut().try_for_each(|e| self.resolve_expr(e))?,
+            StatementKind::Return(es) => es.iter_mut().for_each(|e| self.resolve_expr(e)),
             StatementKind::Assign { lhs, rhs } => {
-                rhs.iter_mut().try_for_each(|e| self.resolve_expr(e))?;
+                rhs.iter_mut().for_each(|e| self.resolve_expr(e));
                 lhs.iter_mut()
-                    .try_for_each(|lval| self.resolve_lval(lval))?;
+                    .for_each(|lval| self.resolve_lval(lval));
             }
             StatementKind::Compound(block) => {
                 // New Scope
@@ -381,7 +413,7 @@ impl Resolver {
                 block
                     .stmts
                     .iter_mut()
-                    .try_for_each(|s| self.resolve_stmt(s))?;
+                    .for_each(|s| self.resolve_stmt(s));
                 self.scope_map.pop();
             }
             StatementKind::If {
@@ -389,77 +421,136 @@ impl Resolver {
                 then_br,
                 else_br,
             } => {
-                self.resolve_expr(guard)?;
-                self.resolve_stmt(then_br)?;
+                self.resolve_expr(guard);
+                self.resolve_stmt(then_br);
                 if let Some(els) = else_br.as_mut() {
-                    self.resolve_stmt(els)?;
+                    self.resolve_stmt(els);
                 }
             }
             StatementKind::While { guard, body } => {
-                self.resolve_expr(guard)?;
-                self.resolve_stmt(body)?;
+                self.resolve_expr(guard);
+                self.resolve_stmt(body);
             }
             StatementKind::Procedure { name, args } => {
-                // Check name
-                let pos_entry = self.scope_map.find(name);
-                match pos_entry {
-                    None => {
-                        return Err(ResolveError {
-                            msg: format!("Procedure {} not declared!", name),
-                            span: s.span.clone(),
-                        });
-                    }
-                    Some(entry) => *name = entry.unique_name.clone(),
+                if !self.resolve_invocation(name, args, &s.span, true) {
+                    s.kind = StatementKind::Error;
                 }
-                args.iter_mut().try_for_each(|e| self.resolve_expr(e))?;
             }
-            StatementKind::Error => todo!("Resolution for Error Statement is not implemented yet"),
+            StatementKind::Error => (), // Poison node from parser recovery; its error was already reported by the parser.
         }
-        Ok(())
     }
 
     /// Resolves an expression, replacing variable names with their unique names.
     ///
     /// The wildcard identifier `_` is left unchanged.
-    pub fn resolve_expr(&mut self, e: &mut Expression) -> ResolveResult {
+    pub fn resolve_expr(&mut self, e: &mut Expression) {
         match &mut e.kind {
-            ExpressionKind::Error => (),
+            ExpressionKind::Error => (), // Poison node from parser recovery; its error was already reported by the parser.
             ExpressionKind::Var(n) if n == "_" => (),
             ExpressionKind::Var(x) => match self.scope_map.find(x) {
                 Some(entry) => *x = entry.unique_name.clone(),
                 None => {
-                    return Err(ResolveError {
-                        msg: format!("Undefined Variable {} found!", x),
-                        span: e.span.clone(),
-                    });
+                    self.push_error(
+                        e.span.clone(),
+                        format!("Undefined Variable {} found!", x),
+                        "Undefined Variable",
+                    );
+                    e.kind = ExpressionKind::Error;
                 }
             },
-            ExpressionKind::ArrayLit(es) => es.iter_mut().try_for_each(|e| self.resolve_expr(e))?,
+            ExpressionKind::ArrayLit(es) => es.iter_mut().for_each(|e| self.resolve_expr(e)),
             ExpressionKind::Binary(_, e1, e2) => {
-                self.resolve_expr(e1)?;
-                self.resolve_expr(e2)?
+                self.resolve_expr(e1);
+                self.resolve_expr(e2)
             }
-            ExpressionKind::Unary(_, e) => self.resolve_expr(e)?,
+            ExpressionKind::Unary(_, e) => self.resolve_expr(e),
             ExpressionKind::Subscript(e, e1) => {
-                self.resolve_expr(e)?;
-                self.resolve_expr(e1)?;
+                self.resolve_expr(e);
+                self.resolve_expr(e1);
             }
-            ExpressionKind::Dot(e, _) => self.resolve_expr(e)?,
+            ExpressionKind::Dot(e, _) => self.resolve_expr(e),
             ExpressionKind::Call { name, args } => {
-                let pos_entry = self.scope_map.find(name);
-                match pos_entry {
-                    None => {
-                        return Err(ResolveError {
-                            msg: format!("Function {} was not declared!", name),
-                            span: e.span.clone(),
-                        });
-                    }
-                    Some(entry) => *name = entry.unique_name.clone(),
+                if !self.resolve_invocation(name, args, &e.span, false) {
+                    e.kind = ExpressionKind::Error;
                 }
-                args.iter_mut().try_for_each(|e| self.resolve_expr(e))?;
             }
             _ => (),
         }
-        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{lexer::Lexer, parser::Parser, typecheck::Typechecker};
+
+    fn parse_and_resolve(src: &str) -> (Program, Vec<Diagnostic>) {
+        let mut parser = Parser::new(Lexer::new(src));
+        let (mut prog, parse_errors) = parser.parse();
+        assert!(parse_errors.is_empty(), "unexpected parse errors: {parse_errors:?}");
+        let resolve_errors = Resolver::new().resolve(&mut prog);
+        (prog, resolve_errors)
+    }
+
+    #[test]
+    fn poisons_undefined_var_and_call_and_still_resolves_args() {
+        let (prog, errors) = parse_and_resolve(
+            "f(): int {
+                return missing_fn(missing_arg)
+            }",
+        );
+        assert_eq!(errors.len(), 2);
+        let Declaration::FunDecl(fun) = &prog.decls[0] else {
+            panic!("expected function");
+        };
+        let StatementKind::Return(vals) = &fun.body.stmts[0].kind else {
+            panic!("expected return");
+        };
+        assert!(matches!(vals[0].kind, ExpressionKind::Error));
+        // Typechecking should not panic on poisoned ExpressionKind::Error (unlike unpoisoned missing names).
+        assert!(Typechecker::new().typecheck(&prog).is_err());
+    }
+
+    #[test]
+    fn poisons_undefined_procedure_and_still_resolves_args() {
+        let (prog, errors) = parse_and_resolve(
+            "f() {
+                missing_proc(missing_arg)
+            }",
+        );
+        assert_eq!(errors.len(), 2);
+        let Declaration::FunDecl(fun) = &prog.decls[0] else {
+            panic!("expected function");
+        };
+        assert!(matches!(fun.body.stmts[0].kind, StatementKind::Error));
+    }
+
+    #[test]
+    fn poisons_duplicate_declarations_and_parameters() {
+        let (prog, errors) = parse_and_resolve(
+            "f(x: int, x: int): int {
+                y: int = 1
+                y: int = missing_init
+                y: int, z: int = 2, 3
+                return x + z
+            }
+            f(): int {
+                return 0
+            }",
+        );
+        // Duplicate param x, duplicate local y, undefined missing_init, duplicate local y in multi-assign, duplicate function f.
+        assert_eq!(errors.len(), 5, "errors: {errors:?}");
+        assert!(matches!(prog.decls[1], Declaration::Error));
+        let Declaration::FunDecl(fun) = &prog.decls[0] else {
+            panic!("expected function");
+        };
+        assert!(fun.params[0].is_some());
+        assert!(fun.params[1].is_none());
+        assert!(matches!(fun.body.stmts[1].kind, StatementKind::Error));
+        let StatementKind::Assign { lhs, .. } = &fun.body.stmts[2].kind else {
+            panic!("expected assign");
+        };
+        assert!(matches!(lhs[0], LVal::Error(_)));
+        assert!(matches!(lhs[1], LVal::V(_)));
     }
 }

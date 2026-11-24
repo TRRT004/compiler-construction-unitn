@@ -2,7 +2,7 @@
 - [x] Edit `source_map.rs` to add a few helper functions.
 - [x] Add `diagnostic` type to a new `diagnostic.rs`.
 - [x] Edit `parser.rs` to return multiple errors.
-- [] Edit `resolver.rs` to accumulate errors.
+- [x] Edit `resolver.rs` to accumulate errors.
 - [] Generate 3 broken programs.
 - [] Do point 2 and 3 of `A2.md`
 

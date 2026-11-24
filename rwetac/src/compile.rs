@@ -101,11 +101,9 @@ pub fn compile(
 
         let _resolve_span = span!(Level::INFO, "Resolving").entered();
         let mut resolver = Resolver::new();
-        resolver.resolve(&mut ast).map_err(|e| {
-            let (line, col) = source_map.get_span_location(&e.span);
-
-            anyhow::anyhow!("Resolving failed at {}:{}. {}", line, col, e.msg)
-        })?;
+        // todo!("Use resolution_errors to print errors with source locations");
+        // Also need to move the variable so that it's usable after the block, so we can print the errors with source locations
+        let resolution_errors = resolver.resolve(&mut ast);
     }
     crate::log_separator!("Typechecking");
 
