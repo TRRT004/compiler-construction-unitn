@@ -2,4 +2,9 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Initializer has wrong type. Found bool
+error: mismatched types in variable initialization
+  --> <input>:2:14
+  |
+2 |     x: int = true  // type mismatch
+  |     ------   ^^^^ expected `int` due to this declaration, expected `int`, found `bool`
+  |

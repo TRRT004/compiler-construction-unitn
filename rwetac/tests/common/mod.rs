@@ -83,6 +83,7 @@ pub fn setup(input: &str) -> Env<'_> {
 }
 
 pub fn typecheck_stmt(input: &str) -> String {
+    let sm = rwetac::source_map::SourceMap::new(input.to_string());
     let mut env = setup(input);
     let ast = env.parser.parse_statement();
     assert!(
@@ -90,13 +91,21 @@ pub fn typecheck_stmt(input: &str) -> String {
         "unexpected parse errors: {:?}",
         env.parser.errors()
     );
-    match env.tchecker.typecheck_statement(&ast, &Type::Bool) {
-        Ok(_) => panic!("Typechecking succeded unexpectedly"),
-        Err(e) => format!("Failure: {:#?}", e),
-    }
+    env.tchecker.typecheck_statement(&ast, &Type::Bool);
+    assert!(
+        !env.tchecker.diagnostics.is_empty(),
+        "Typechecking succeeded unexpectedly"
+    );
+    env.tchecker
+        .diagnostics
+        .iter()
+        .map(|d| d.render(&sm, None, false))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn typecheck_expr(input: &str) -> String {
+    let sm = rwetac::source_map::SourceMap::new(input.to_string());
     let mut env = setup(input);
     let ast = env.parser.parse_expression(0);
     assert!(
@@ -104,10 +113,17 @@ pub fn typecheck_expr(input: &str) -> String {
         "unexpected parse errors: {:?}",
         env.parser.errors()
     );
-    match env.tchecker.typecheck_expression(&ast) {
-        Ok(_) => panic!("Typechecking succeded unexpectedly"),
-        Err(e) => format!("Failure: {:#?}", e),
-    }
+    env.tchecker.typecheck_expression(&ast);
+    assert!(
+        !env.tchecker.diagnostics.is_empty(),
+        "Typechecking succeeded unexpectedly"
+    );
+    env.tchecker
+        .diagnostics
+        .iter()
+        .map(|d| d.render(&sm, None, false))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn typecheck_expr_succeed(input: &str) -> String {
@@ -118,10 +134,13 @@ pub fn typecheck_expr_succeed(input: &str) -> String {
         "unexpected parse errors: {:?}",
         env.parser.errors()
     );
-    match env.tchecker.typecheck_expression(&ast) {
-        Ok(t) => format!("{}", t),
-        Err(_) => panic!("Typechecking failed unexpectedly"),
-    }
+    let t = env.tchecker.typecheck_expression(&ast);
+    assert!(
+        env.tchecker.diagnostics.is_empty(),
+        "Typechecking failed unexpectedly: {:?}",
+        env.tchecker.diagnostics
+    );
+    format!("{}", t)
 }
 
 pub fn typecheck_stmt_succeed(input: &str) -> String {
@@ -132,8 +151,11 @@ pub fn typecheck_stmt_succeed(input: &str) -> String {
         "unexpected parse errors: {:?}",
         env.parser.errors()
     );
-    match env.tchecker.typecheck_statement(&ast, &Type::Bool) {
-        Ok(_) => "Ok(())".to_string(),
-        Err(_) => panic!("Typechecking failed unexpectedly"),
-    }
+    env.tchecker.typecheck_statement(&ast, &Type::Bool);
+    assert!(
+        env.tchecker.diagnostics.is_empty(),
+        "Typechecking failed unexpectedly: {:?}",
+        env.tchecker.diagnostics
+    );
+    "Ok(())".to_string()
 }

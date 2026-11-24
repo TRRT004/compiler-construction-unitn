@@ -2,4 +2,11 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Array Index must be an integer. Found bool
+error: array index must have type `int`
+  --> <input>:4:16
+  |
+3 |     b: bool = true
+  |     ------- `b` was declared with type `bool` here
+4 |     x: int = a[b]  // type mismatch: bool used as index
+  |                ^ expected `int`, found `bool`
+  |

@@ -395,8 +395,15 @@ impl<'a> Parser<'a> {
             self.syncronize_decl(0);
             return None;
         };
-        // Parse params
-        let (params, types) = self.parse_params().into_iter().unzip();
+        // Parse params with their spans
+        let mut params = Vec::new();
+        let mut param_spans = Vec::new();
+        let mut types = Vec::new();
+        for (p, p_span, ty) in self.parse_params() {
+            params.push(p);
+            param_spans.push(p_span);
+            types.push(ty);
+        }
 
         let Some(_) = self.expect(Token::RParen) else {
             self.syncronize_decl(0);
@@ -437,17 +444,18 @@ impl<'a> Parser<'a> {
         Some(Function {
             name,
             params,
+            param_spans,
             f_type,
             body,
             span: span_name,
         })
     }
 
-    fn parse_params(&mut self) -> Vec<(Option<String>, Type)> {
+    fn parse_params(&mut self) -> Vec<(Option<String>, Option<Span>, Type)> {
         let ps = |p: &mut Self| {
             let opt_name = p.expect_id();
             let has_colon = p.expect(Token::Colon).is_some();
-            let t = if matches!(
+            let (t, opt_ty_span) = if matches!(
                 p.peek(),
                 Token::Comma | Token::RParen | Token::LBrace | Token::Semicolon | Token::Eof
             ) {
@@ -458,11 +466,21 @@ impl<'a> Parser<'a> {
                         format!("expected type, found {:?}", found),
                     );
                 }
-                Type::Error
+                (Type::Error, None)
             } else {
-                p.parse_type().0
+                let (ty, ty_span) = p.parse_type();
+                (ty, Some(ty_span))
             };
-            (opt_name.map(|(name, _)| name), t)
+            match opt_name {
+                Some((name, name_span)) => {
+                    let full_span = match opt_ty_span {
+                        Some(ty_span) => name_span.merge(&ty_span),
+                        None => name_span,
+                    };
+                    (Some(name), Some(full_span), t)
+                }
+                None => (None, None, t),
+            }
         };
         self.parse_sep_list_comma(Token::RParen, ps)
     }

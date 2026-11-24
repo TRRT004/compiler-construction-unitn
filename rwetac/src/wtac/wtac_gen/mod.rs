@@ -179,7 +179,7 @@ impl WtacGen {
 
     /// Typechecks an expression and unwraps single-element tuples.
     fn type_and_unfold(&mut self, e: &ast::Expression) -> Type {
-        let e_ty = self.tchecker.typecheck_expression(e).unwrap();
+        let e_ty = self.tchecker.typecheck_expression(e);
         match e_ty {
             Type::FunType { .. } => {
                 panic!("Internal Error: Not possible that expression has function Type")

@@ -2,4 +2,10 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Function block does not have void as its type!
+error: not all control-flow paths in `get_sign` return a value
+  --> <input>:2:1
+  |
+2 | get_sign(n: int): int {
+  | ^^^^^^^^ expected function to return `(int)` on all paths
+  |
+  = help: ensure every branch ends with a `return` statement

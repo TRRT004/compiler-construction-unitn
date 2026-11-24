@@ -12,9 +12,11 @@
 //! type. This tracks whether control flow can continue past a statement, which is
 //! needed to verify that all function branches return a value.
 
-use std::collections::HashSet;
-
+use logos::Span;
 use tracing::{debug, instrument};
+
+use crate::diagnostic::Diagnostic;
+use std::collections::HashMap;
 
 use crate::{
     ast::*,
@@ -56,33 +58,6 @@ impl StatementType {
     }
 }
 
-/// An error produced during typechecking.
-#[derive(Debug)]
-pub enum TypeError {
-    /// A type mismatch where the expected type is known.
-    MismatchedTypes {
-        msg: String,
-        expected: Type,
-        span: logos::Span,
-    },
-    /// A general type error without a single expected type.
-    Generic { msg: String, span: logos::Span },
-}
-
-impl std::fmt::Display for TypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypeError::MismatchedTypes { msg, .. } | TypeError::Generic { msg, .. } => {
-                write!(f, "{}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for TypeError {}
-
-type TypeResult = Result<(), TypeError>;
-
 /// The typechecker for the ETA language.
 ///
 /// Maintains a [`SymbolTable`] that is populated during checking and later
@@ -91,6 +66,8 @@ type TypeResult = Result<(), TypeError>;
 /// pre-registered.
 pub struct Typechecker {
     pub symtab: SymbolTable,
+    pub diagnostics: Vec<Diagnostic>,
+    curr_fun_span: Option<Span>,
 }
 
 impl Default for Typechecker {
@@ -112,42 +89,52 @@ impl Typechecker {
             ret_type: vec![Type::Int],
         };
         symtab.add_fun("length".to_string(), length_f_type, true, None);
-        Typechecker { symtab }
+        Typechecker {
+            symtab,
+            diagnostics: Vec::new(),
+            curr_fun_span: None,
+        }
     }
 
     /// Entry point: typechecks an entire program.
     ///
     /// First registers all top-level names, then checks each declaration body.
-    pub fn typecheck(&mut self, prog: &Program) -> TypeResult {
+    pub fn typecheck(&mut self, prog: &Program) -> Result<(), Vec<Diagnostic>> {
         for decl in &prog.decls {
-            self.add_top_level(decl)?;
+            self.add_top_level(decl);
         }
         debug!(sym_tab = %self.symtab, "Top-Level SymbolTable");
         for decl in &prog.decls {
-            self.typecheck_declarations(decl)?
+            self.typecheck_declarations(decl);
         }
         debug!(sym_tab = %self.symtab, "Final SymbolTable");
-        Ok(())
+
+        if self.diagnostics.is_empty() {
+            Ok(())
+        } else {
+            Err(self.diagnostics.clone())
+        }
     }
 
     /// Registers a top-level declaration (function signature or record type)
     /// without checking its body.
-    fn add_top_level(&mut self, decl: &Declaration) -> TypeResult {
+    fn add_top_level(&mut self, decl: &Declaration) {
         match decl {
             Declaration::FunDecl(Function {
                 name, f_type, span, ..
             }) => {
-                self.symtab
-                    .add_fun(name.clone(), f_type.clone(), false, Some(span.clone()));
-                Ok(())
+                if self.symtab.get_opt(name).is_none() {
+                    self.symtab
+                        .add_fun(name.clone(), f_type.clone(), false, Some(span.clone()));
+                }
             }
             Declaration::RecordDecl(rec) => self.typecheck_record(rec),
-            _ => Ok(()),
+            _ => (),
         }
     }
 
     /// Typechecks a single top-level declaration.
-    fn typecheck_declarations(&mut self, decl: &Declaration) -> TypeResult {
+    fn typecheck_declarations(&mut self, decl: &Declaration) {
         match decl {
             Declaration::Global(VarDeclaration {
                 name,
@@ -157,54 +144,57 @@ impl Typechecker {
                 span,
             }) if dims.is_empty() => {
                 if let Type::Record(_) = var_type {
-                    return Err(TypeError::Generic {
-                        msg: "Global Record declarations are not allowed".to_string(),
-                        span: span.clone(),
-                    });
+                    self.diagnostics.push(Diagnostic::error_with_label(
+                        span.clone(),
+                        format!("global record variable `{name}` is not allowed"),
+                        "records cannot be declared as global variables",
+                    ));
+                    self.symtab
+                        .add_global_var(name.clone(), Type::Error, Some(span.clone()));
+                    return;
                 }
                 self.symtab
                     .add_global_var(name.clone(), var_type.clone(), Some(span.clone()));
-                match init
-                    .as_ref()
-                    .map(|e| self.typecheck_expression(e))
-                    .transpose()?
-                {
-                    Some(t) => {
-                        if t != *var_type {
-                            return Err(TypeError::MismatchedTypes {
-                                msg: "Type of global and its initializer mismatch".to_string(),
-                                expected: var_type.clone(),
-                                span: span.clone(),
-                            });
+                if let Some(e) = init {
+                    let t = self.typecheck_expression(e);
+                    if t != Type::Error && !Self::eq_mod_unknown(&t, var_type) {
+                        let mut diag = Diagnostic::error_with_label(
+                            e.span.clone(),
+                            format!("mismatched types in global `{name}` initialization"),
+                            format!("expected `{var_type}`, found `{t}`"),
+                        )
+                        .with_secondary(
+                            span.clone(),
+                            format!("`{name}` declared with type `{var_type}` here"),
+                        );
+                        if let Some((s, m)) = self.expr_decl_info(e) {
+                            diag = diag.with_secondary(s, m);
                         }
-                        Ok(())
+                        self.diagnostics.push(diag);
                     }
-                    None => Ok(()),
                 }
             }
             // Array globals
             Declaration::Global(vd) => {
-                if vd.init.is_some() {
-                    return Err(TypeError::Generic {
-                        msg: format!(
-                            "Global Array declaration {} is not allowed to have initializer",
-                            vd.name
-                        ),
-                        span: vd.span.clone(),
-                    });
-                }
-
-                self.typecheck_arr_decl(vd)?;
                 self.symtab.add_global_var(
                     vd.name.clone(),
                     vd.var_type.clone(),
                     Some(vd.span.clone()),
                 );
-                Ok(())
+
+                if vd.init.is_some() {
+                    self.diagnostics.push(Diagnostic::error_with_label(
+                        vd.span.clone(),
+                        format!("global array `{}` cannot have an initializer", vd.name),
+                        "global array initializers are not allowed",
+                    ));
+                    return;
+                }
+                self.typecheck_arr_decl(vd);
             }
             Declaration::FunDecl(function) => self.typecheck_fun(function),
             Declaration::RecordDecl(rec) => self.check_record_cycles(rec),
-            Declaration::Error => todo!("Typechecking for Error Declaration is not implemented yet"),
+            Declaration::Error => (),
         }
     }
 
@@ -212,15 +202,13 @@ impl Typechecker {
     /// typecheck rejects that outright, so no cycle can be built. Adding nested
     /// records means implementing this — walk members recursively, keeping the
     /// records already seen, and report a cycle on revisiting one.
-    fn check_record_cycles(&self, _cur_rec: &Record) -> TypeResult {
-        Ok(())
-    }
+    fn check_record_cycles(&self, _cur_rec: &Record) {}
 
     /// Typechecks a record declaration: verifies that no two fields share a name
     /// and computes byte offsets for each field. Registers the record in the
     /// symbol table.
-    fn typecheck_record(&mut self, rec: &Record) -> TypeResult {
-        let mut seen = HashSet::new();
+    fn typecheck_record(&mut self, rec: &Record) {
+        let mut seen: HashMap<String, Span> = HashMap::new();
         let mut members = Vec::new();
         let mut offset = 0;
         // Natural alignment: a field starts at the next multiple of its own
@@ -230,33 +218,48 @@ impl Typechecker {
         for member in &rec.members {
             let MemberDecl { name, t, span } = match member {
                 Member::Var(decl) => decl,
-                Member::Error => todo!("Typechecking for Error Member is not implemented yet"),
+                Member::Error => continue,
             };
-            if seen.contains(name) {
-                return Err(TypeError::Generic {
-                    msg: format!("Duplicate member in Record {}", rec.tag),
-                    span: span.clone(),
-                });
+            if let Some(prev_span) = seen.get(name) {
+                self.diagnostics.push(
+                    Diagnostic::error_with_label(
+                        span.clone(),
+                        format!("duplicate field `{name}` in record `{}`", rec.tag),
+                        format!("field `{name}` is already declared"),
+                    )
+                    .with_secondary(
+                        prev_span.clone(),
+                        format!("first declaration of `{name}` here"),
+                    ),
+                );
+                continue;
             }
-            seen.insert(name.clone());
+            seen.insert(name.clone(), span.clone());
+
             match t {
                 Type::FunType { .. } => {
-                    return Err(TypeError::Generic {
-                        msg: format!(
-                            "Function Type not allowed inside records. Record {}",
-                            rec.tag
-                        ),
-                        span: span.clone(),
-                    });
+                    self.diagnostics.push(Diagnostic::error_with_label(
+                        span.clone(),
+                        format!("function types are not allowed inside record `{}`", rec.tag),
+                        "field cannot have a function type",
+                    ));
+                    continue;
                 }
                 Type::Record(_) => {
-                    return Err(TypeError::Generic {
-                        msg: "Record Types currently not allowed inside records!.".to_string(),
-                        span: span.clone(),
-                    });
+                    self.diagnostics.push(Diagnostic::error_with_label(
+                        span.clone(),
+                        format!(
+                            "nested record types are not allowed inside record `{}`",
+                            rec.tag
+                        ),
+                        format!("field `{name}` cannot have a record type `{t}`"),
+                    ));
+                    continue;
                 }
+                Type::Tuple { .. } | Type::Unknown | Type::Error => continue,
                 _ => (),
             }
+
             let member_align = types::get_align(t);
             align = align.max(member_align);
             offset = crate::util::round_to_n(offset as isize, member_align as isize) as usize;
@@ -281,13 +284,12 @@ impl Typechecker {
 
         self.symtab
             .add_record(rec.tag.clone(), rec_entry, Some(rec.span.clone()));
-        Ok(())
     }
 
     /// Typechecks a function: adds parameters to the symbol table, checks the body,
     /// and verifies that the body has [`StatementType::Void`] (i.e. all paths return).
     #[instrument(name="Function", skip(self, fun), fields(n = %fun.name))]
-    fn typecheck_fun(&mut self, fun: &Function) -> TypeResult {
+    fn typecheck_fun(&mut self, fun: &Function) {
         let (params_t, ret_t) = match &fun.f_type {
             Type::FunType {
                 param_types,
@@ -296,33 +298,49 @@ impl Typechecker {
             _ => panic!("Internal Error: Function has non-function type"),
         };
 
-        let check_old = |old_entry: &Entry| {
-            if old_entry.t != fun.f_type {
-                return Err(TypeError::Generic {
-                    msg: format!(
-                        "Incompatible function declarations. Old {:?}, New {:?}",
-                        old_entry.t, fun.f_type
-                    ),
-                    span: fun.span.clone(),
-                });
-            }
-            match old_entry.attr {
-                Attr::Fun { defined, .. } => {
-                    if defined {
-                        return Err(TypeError::Generic {
-                            msg: format!("Function {} was already previously defined", fun.name),
-                            span: fun.span.clone(),
-                        });
-                    }
-                    Ok(())
+        if let Some(old_entry) = self.symtab.get_opt(&fun.name) {
+            let old_t = old_entry.t.clone();
+            let old_span = old_entry.decl_span.clone();
+            let old_attr = old_entry.attr.clone();
+
+            if old_t != fun.f_type {
+                let mut diag = Diagnostic::error_with_label(
+                    fun.span.clone(),
+                    format!("incompatible declaration for function `{}`", fun.name),
+                    format!("found signature `{}`", fun.f_type),
+                );
+                if let Some(s) = &old_span {
+                    diag = diag
+                        .with_secondary(s.clone(), format!("previously declared as `{old_t}` here"))
                 }
-                _ => panic!("Internal Error: Symbols is function but has no function atrributes"),
+                self.diagnostics.push(diag);
             }
-        };
-        // Check with old entry
-        if let Some(e) = self.symtab.get_opt(&fun.name) {
-            check_old(e)?
-        };
+            match old_attr {
+                Attr::Fun { defined: true, .. } => {
+                    let mut diag = Diagnostic::error_with_label(
+                        fun.span.clone(),
+                        format!("function `{}` is already defined", fun.name),
+                        "duplicate function definition",
+                    );
+                    if let Some(s) = old_span {
+                        diag = diag.with_secondary(s, "previously defined here")
+                    }
+                    self.diagnostics.push(diag);
+                }
+                Attr::Fun { defined: false, .. } => (),
+                _ => {
+                    let mut diag = Diagnostic::error_with_label(
+                        fun.span.clone(),
+                        format!("`{}` was already declared as a non-function", fun.name),
+                        "conflicting function definition",
+                    );
+                    if let Some(s) = old_span {
+                        diag = diag.with_secondary(s, "previously declared here");
+                    }
+                    self.diagnostics.push(diag);
+                }
+            }
+        }
 
         self.symtab.add_fun(
             fun.name.clone(),
@@ -330,29 +348,39 @@ impl Typechecker {
             true,
             Some(fun.span.clone()),
         );
-        // Add parameters to Symbol Table and then check the body
-        for (p, ty) in fun.params.iter().zip(params_t.iter()) {
-            if let Some(p2) = p {
-                self.symtab.add_local_var(p2.clone(), ty.clone(), Some(fun.span.clone()));
-            } else {
-                continue;
+        for ((p, p_span), ty) in fun
+            .params
+            .iter()
+            .zip(fun.param_spans.iter())
+            .zip(params_t.iter())
+        {
+            if let Some(p) = p {
+                self.symtab
+                    .add_local_var(p.clone(), ty.clone(), p_span.clone());
             }
         }
-        // Add return type as tuple here!
+
         let tuple_ret_t = Type::Tuple {
             elems: ret_t.clone(),
         };
 
-        // If functin has return type then the body has to have type void
-        // otherwise just return it
-        let block_t = self.typecheck_block(&fun.body, &tuple_ret_t)?;
+        self.curr_fun_span = Some(fun.span.clone());
+        let block_t = self.typecheck_block(&fun.body, &tuple_ret_t);
+        self.curr_fun_span = None;
+
         if !ret_t.is_empty() && block_t != StatementType::Void {
-            return Err(TypeError::Generic {
-                msg: "Function block does not have void as its type!".to_string(),
-                span: fun.span.clone(),
-            });
+            self.diagnostics.push(
+                Diagnostic::error_with_label(
+                    fun.span.clone(),
+                    format!(
+                        "not all control-flow paths in `{}` return a value",
+                        fun.name
+                    ),
+                    format!("expected function to return `{tuple_ret_t}` on all paths"),
+                )
+                .with_suggestion("ensure every branch ends with a `return` statement"),
+            );
         }
-        Ok(())
     }
 
     // In some cases we need to have the types without tuples. For example
@@ -380,7 +408,7 @@ impl Typechecker {
         unfolded_tys
     }
 
-    /// Compares two types for equality, treating [`Type::Unknown`] as matching
+    /// Compares two types for equality, treating [`Type::Unknown`] and [`Type::Error`] as matching
     /// any type.
     ///
     /// This is needed for empty array literals (`{}`) whose element type
@@ -389,6 +417,7 @@ impl Typechecker {
         match (t1, t2) {
             (Type::Unknown, _) => true,
             (_, Type::Unknown) => true,
+            (Type::Error, _) | (_, Type::Error) => true,
             // pretty hacky I would say. Just used for length function. Does not cover all cases. Also used for Binary add on arrays
             (Type::Array { elem_type: et1 }, Type::Array { elem_type: et2 }) => {
                 Self::eq_mod_unknown(et1, et2)
@@ -399,12 +428,14 @@ impl Typechecker {
 
     /// Unifies two types, preferring the more specific one.
     ///
+    /// When one side is [`Type::Error`], [`Type::Error`] is returned.
     /// When one side is [`Type::Unknown`] (e.g. from an empty array literal `{}`),
     /// the other side's type is returned. For arrays, unification recurses into
     /// the element type. Used after [`eq_mod_unknown`](Self::eq_mod_unknown)
     /// confirms the types are compatible.
     fn unify(t1: &Type, t2: &Type) -> Type {
         match (t1, t2) {
+            (Type::Error, _) | (_, Type::Error) => Type::Error,
             (Type::Unknown, _) => t2.clone(),
             (_, Type::Unknown) => t1.clone(),
             // pretty hacky I would say. Just used for length function. Does not cover all cases. Also used for Binary add on arrays
@@ -418,25 +449,31 @@ impl Typechecker {
         }
     }
 
-    fn typecheck_block(&mut self, block: &Block, ret_t: &Type) -> Result<StatementType, TypeError> {
+    fn typecheck_block(&mut self, block: &Block, ret_t: &Type) -> StatementType {
         if block.stmts.is_empty() {
-            return Ok(StatementType::Unit);
+            return StatementType::Unit;
         }
         let (last_stmt, preceding_stmts) = block.stmts.split_last().unwrap();
+        let mut always_returns = false;
         // All except last have to have type unit
         for s in preceding_stmts {
-            let stmt_t = self.typecheck_statement(s, ret_t)?;
+            let stmt_t = self.typecheck_statement(s, ret_t);
             if stmt_t != StatementType::Unit {
-                return Err(TypeError::Generic {
-                    msg:
-                        "This statement always returns, so the statements after it are unreachable"
-                            .to_string(),
-                    span: s.span.clone(),
-                });
+                always_returns = true;
+                self.diagnostics.push(Diagnostic::error_with_label(
+                    s.span.clone(),
+                    "unreachable code after returning statement",
+                    "this statement always returns, so following statements are unreachable",
+                ));
             }
         }
         // Result of Block is result of last stmt
-        self.typecheck_statement(last_stmt, ret_t)
+        let last_t = self.typecheck_statement(last_stmt, ret_t);
+        if always_returns {
+            StatementType::Void
+        } else {
+            last_t
+        }
     }
 
     /// Typechecks a statement, returning its [`StatementType`].
@@ -444,11 +481,7 @@ impl Typechecker {
     /// `ret_t` is the expected return type of the enclosing function, passed
     /// down so that `return` statements can be checked against it.
     #[instrument(skip(self, ret_t), level = "debug")]
-    pub fn typecheck_statement(
-        &mut self,
-        stmt: &Statement,
-        ret_t: &Type,
-    ) -> Result<StatementType, TypeError> {
+    pub fn typecheck_statement(&mut self, stmt: &Statement, ret_t: &Type) -> StatementType {
         match &stmt.kind {
             StatementKind::Return(es) => self.typecheck_return(es, &stmt.span, ret_t),
             StatementKind::LocalDecl(vd) => {
@@ -461,8 +494,8 @@ impl Typechecker {
                     self.typecheck_scalar_decl(vd)
                 } else {
                     // Arrays
-                    self.typecheck_arr_decl(vd)?;
-                    Ok(StatementType::Unit)
+                    self.typecheck_arr_decl(vd);
+                    StatementType::Unit
                 }
             }
             StatementKind::Assign { lhs, rhs } => self.typecheck_assign(lhs, rhs, &stmt.span),
@@ -472,48 +505,79 @@ impl Typechecker {
                 then_br,
                 else_br,
             } => {
-                let e_t = self.typecheck_expression(guard)?;
-                if e_t != Type::Bool {
-                    return Err(TypeError::MismatchedTypes {
-                        msg: format!("Guard of If has to have Type bool. Found {}", e_t),
-                        expected: Type::Bool,
-                        span: guard.span.clone(),
-                    });
+                let e_t = self.typecheck_expression(guard);
+                if e_t != Type::Bool && e_t != Type::Error {
+                    let mut diag = Diagnostic::error_with_label(
+                        guard.span.clone(),
+                        "condition of `if` statement must be `bool`",
+                        format!("expected `bool`, found `{e_t}`"),
+                    );
+                    if let Some((s, m)) = self.expr_decl_info(guard) {
+                        diag = diag.with_secondary(s, m);
+                    }
+                    if e_t == Type::Int {
+                        diag = diag.with_suggestion(
+                            "compare the integer to produce a `bool`, e.g. `x != 0`",
+                        );
+                    }
+                    self.diagnostics.push(diag);
                 }
 
-                let then_t = self.typecheck_statement(then_br, ret_t)?;
+                let then_t = self.typecheck_statement(then_br, ret_t);
                 if let Some(s) = else_br.as_ref() {
-                    let else_t = self.typecheck_statement(s, ret_t)?;
-                    let lub = StatementType::lub(&then_t, &else_t);
-                    Ok(lub)
+                    let else_t = self.typecheck_statement(s, ret_t);
+                    StatementType::lub(&then_t, &else_t)
                 }
                 // No else branch then if has to be unit since it can be skipped
                 else {
-                    Ok(StatementType::Unit)
+                    StatementType::Unit
                 }
             }
             StatementKind::While { guard, body } => {
-                let e_t = self.typecheck_expression(guard)?;
-                if e_t != Type::Bool {
-                    return Err(TypeError::MismatchedTypes {
-                        msg: format!("Guard of While has to have Type bool. Found {}", e_t),
-                        expected: Type::Bool,
-                        span: guard.span.clone(),
-                    });
+                let e_t = self.typecheck_expression(guard);
+                if e_t != Type::Bool && e_t != Type::Error {
+                    let mut diag = Diagnostic::error_with_label(
+                        guard.span.clone(),
+                        "condition of while loop must be `bool`",
+                        format!("expected `bool`, found `{e_t}`"),
+                    );
+                    if let Some((s, m)) = self.expr_decl_info(guard) {
+                        diag = diag.with_secondary(s, m);
+                    }
+                    if e_t == Type::Int {
+                        diag = diag.with_suggestion(
+                            "compare the integer to produce a `bool`, e.g. `x != 0`",
+                        );
+                    }
+                    self.diagnostics.push(diag);
                 }
-                self.typecheck_statement(body, ret_t)?;
-                Ok(StatementType::Unit)
+                self.typecheck_statement(body, ret_t);
+                StatementType::Unit
             }
             StatementKind::Procedure { name, args } => {
-                match self.check_fun_args(name, args, &stmt.span)? {
-                    Type::Tuple { elems } if elems.is_empty() => Ok(StatementType::Unit),
-                    _ => Err(TypeError::Generic {
-                        msg: "Procedure call needs empty return type".to_string(),
-                        span: stmt.span.clone(),
-                    }),
+                match self.check_fun_args(name, args, &stmt.span) {
+                    Type::Error => StatementType::Unit,
+                    Type::Tuple { elems } if elems.is_empty() => StatementType::Unit,
+                    ret_ty => {
+                        let mut diag = Diagnostic::error_with_label(
+                            stmt.span.clone(),
+                            "procedure call needs empty return type",
+                            format!("returns `{ret_ty}`, expected `void`"),
+                        )
+                        .with_suggestion("assign the return value or discard it with `_ = ...`");
+
+                        if let Some(d_span) =
+                            self.symtab.get_opt(name).and_then(|e| e.decl_span.clone())
+                        {
+                            diag = diag
+                                .with_secondary(d_span, format!("function `{name}` defined here"));
+                        }
+                        self.diagnostics.push(diag);
+                        StatementType::Unit
+                    }
                 }
             }
-            StatementKind::Error => todo!("Typechecking for Error StatementKind is not implemented yet"),
+            StatementKind::Error => StatementType::Unit,
         }
     }
 
@@ -522,86 +586,124 @@ impl Typechecker {
     /// Evaluates each return expression, flattens tuple types (from multi-return
     /// function calls), and verifies that the resulting types match the enclosing
     /// function's declared return type `ret_t` in both number and kind.
-    fn typecheck_return(
-        &mut self,
-        es: &[Expression],
-        span: &logos::Span,
-        ret_t: &Type,
-    ) -> Result<StatementType, TypeError> {
-        let es_ty: Vec<Type> = es
-            .iter()
-            .map(|e| self.typecheck_expression(e))
-            .collect::<Result<_, _>>()?;
+    fn typecheck_return(&mut self, es: &[Expression], span: &Span, ret_t: &Type) -> StatementType {
+        let es_ty: Vec<Type> = es.iter().map(|e| self.typecheck_expression(e)).collect();
         // Function calls return tuples
         let unfold_es_ty = Self::unfold_tuple_types(es_ty);
 
-        let tuple_es_ty = Type::Tuple {
-            elems: unfold_es_ty,
+        let Type::Tuple { elems: ret_elems } = ret_t else {
+            panic!("Internal Error: Provied Return Type was not a Tuple");
         };
-        match (tuple_es_ty, ret_t) {
-            (Type::Tuple { elems: elems1 }, Type::Tuple { elems: ret_elems }) => {
-                if elems1.len() != ret_elems.len() {
-                    Err(TypeError::MismatchedTypes {
-                        msg: format!(
-                            "Return has wrong type!. Number of types do not match. Found {:?}",
-                            elems1
-                        ),
-                        expected: ret_t.clone(),
-                        span: span.clone(),
-                    })
-                } else if elems1 != *ret_elems {
-                    Err(TypeError::Generic {
-                        msg: format!(
-                            "One Return type does not match with the return statement. Found {:?}. Expected {:?}",
-                            elems1, ret_elems
-                        ),
-                        span: span.clone(),
-                    })
-                } else {
-                    Ok(StatementType::Void)
-                }
-            }
-            _ => panic!("Internal Error: Provided Return Type was not a Tuple!"),
+
+        // If any returned expression is of type error, stay silent and return
+        if unfold_es_ty.iter().any(|t| *t == Type::Error) {
+            return StatementType::Void;
         }
+
+        if unfold_es_ty.len() != ret_elems.len() {
+            let mut diag = Diagnostic::error_with_label(
+                span.clone(),
+                "wrong number of return values",
+                format!(
+                    "expected {} return value(s), found {}",
+                    ret_elems.len(),
+                    unfold_es_ty.len()
+                ),
+            );
+            if let Some(fun_span) = self.curr_fun_span.clone() {
+                diag = diag.with_secondary(
+                    fun_span,
+                    format!("function declared to return `{ret_t}` here"),
+                );
+            }
+            self.diagnostics.push(diag);
+            return StatementType::Void;
+        }
+
+        let one_to_one = es.len() == unfold_es_ty.len();
+        for (i, (actual, expected)) in unfold_es_ty.iter().zip(ret_elems.iter()).enumerate() {
+            if !Self::eq_mod_unknown(actual, expected) {
+                let prim_span = if one_to_one {
+                    es[i].span.clone()
+                } else {
+                    span.clone()
+                };
+                let mut diag = Diagnostic::error_with_label(
+                    prim_span,
+                    "mismatched return type",
+                    format!("expected `{expected}`, found `{actual}`"),
+                );
+                if one_to_one && let Some((s, m)) = self.expr_decl_info(&es[i]) {
+                    diag = diag.with_secondary(s, m);
+                }
+                if let Some(fun_span) = self.curr_fun_span.clone() {
+                    diag = diag.with_secondary(
+                        fun_span,
+                        format!("function declared to return `{ret_t}` here"),
+                    );
+                }
+                self.diagnostics.push(diag);
+            }
+        }
+        StatementType::Void
     }
 
     /// Typechecks a scalar variable declaration (no array dimensions).
     ///
     /// Checks the initializer (if present) against the declared type.
     /// Single-element tuples returned by function calls are unwrapped before comparison.
-    fn typecheck_scalar_decl(&mut self, vd: &VarDeclaration) -> Result<StatementType, TypeError> {
-        match &vd.init {
-            Some(e) => {
-                let e_ty = self.typecheck_expression(e)?;
-                let e_ty_unfold = if let Type::Tuple { elems } = &e_ty {
-                    let es_unfold = Self::unfold_tuple_types(elems.clone());
-                    if es_unfold.len() != 1 {
-                        return Err(TypeError::MismatchedTypes {
-                            msg: format!(
-                                "Initializer has wrong Tuple type. Length does not works. Found {}",
-                                Type::Tuple {
-                                    elems: elems.clone()
-                                }
-                            ),
-                            expected: vd.var_type.clone(),
-                            span: e.span.clone(),
-                        });
-                    }
-                    es_unfold[0].clone()
-                } else {
-                    e_ty.clone()
-                };
-                if e_ty_unfold != vd.var_type {
-                    return Err(TypeError::MismatchedTypes {
-                        msg: format!("Initializer has wrong type. Found {}", e_ty.clone()),
-                        expected: vd.var_type.clone(),
-                        span: e.span.clone(),
-                    });
-                }
-                Ok(StatementType::Unit)
+    fn typecheck_scalar_decl(&mut self, vd: &VarDeclaration) -> StatementType {
+        if let Some(e) = &vd.init {
+            let e_ty = self.typecheck_expression(e);
+            if e_ty == Type::Error {
+                return StatementType::Unit;
             }
-            None => Ok(StatementType::Unit),
+            let e_ty_unfold = if let Type::Tuple { elems } = &e_ty {
+                let es_unfold = Self::unfold_tuple_types(elems.clone());
+                if es_unfold.len() != 1 {
+                    self.diagnostics.push(
+                        Diagnostic::error_with_label(
+                            e.span.clone(),
+                            "mismatched number of values in variable initialization",
+                            format!(
+                                "expected a single value of type `{}`, found `{e_ty}`",
+                                vd.var_type
+                            ),
+                        )
+                        .with_secondary(
+                            vd.span.clone(),
+                            format!("expected `{}` due to this declaration", vd.var_type),
+                        ),
+                    );
+                    return StatementType::Unit;
+                }
+                es_unfold[0].clone()
+            } else {
+                e_ty.clone()
+            };
+
+            if e_ty_unfold != Type::Error && !Self::eq_mod_unknown(&e_ty_unfold, &vd.var_type) {
+                let mut diag = Diagnostic::error_with_label(
+                    e.span.clone(),
+                    "mismatched types in variable initialization",
+                    format!("expected `{}`, found `{e_ty_unfold}`", vd.var_type),
+                )
+                .with_secondary(
+                    vd.span.clone(),
+                    format!("expected `{}` due to this declaration", vd.var_type),
+                );
+                if let Some((s, m)) = self.expr_decl_info(e) {
+                    diag = diag.with_secondary(s, m);
+                }
+                if vd.var_type == Type::Bool && e_ty_unfold == Type::Int {
+                    diag = diag.with_suggestion(
+                        "compare the integer expression to produce a bool, e.g. `... != 0`",
+                    );
+                }
+                self.diagnostics.push(diag);
+            }
         }
+        StatementType::Unit
     }
 
     /// Typechecks an assignment statement.
@@ -611,52 +713,82 @@ impl Typechecker {
     /// and checks that the LHS and RHS match in length and types.
     /// Uses [`eq_mod_unknown`](Self::eq_mod_unknown) for comparison so that
     /// the wildcard `_` (typed as `Unknown`) is accepted on the LHS.
-    fn typecheck_assign(
-        &mut self,
-        lhs: &[LVal],
-        rhs: &[Expression],
-        span: &logos::Span,
-    ) -> Result<StatementType, TypeError> {
-        if !lhs.iter().all(is_lval) {
-            return Err(TypeError::Generic {
-                msg: format!("Not all expression on LHS are Lvalues. LVals : {:?}", lhs),
-                span: span.clone(),
-            });
+    fn typecheck_assign(&mut self, lhs: &[LVal], rhs: &[Expression], span: &Span) -> StatementType {
+        let mut bad_lval = false;
+        for l in lhs {
+            if !is_lval(l) {
+                self.diagnostics.push(Diagnostic::error_with_label(
+                    l.span(),
+                    "invalid assignment target",
+                    "cannot assign to this expression",
+                ));
+                bad_lval = true;
+            }
         }
 
-        let lhs_t: Vec<Type> = lhs
-            .iter()
-            .map(|s| self.typecheck_lval(s))
-            .collect::<Result<_, _>>()?;
+        let lhs_t: Vec<Type> = lhs.iter().map(|s| self.typecheck_lval(s)).collect();
 
-        let rhs_t: Vec<Type> = rhs
-            .iter()
-            .map(|e| self.typecheck_expression(e))
-            .collect::<Result<_, _>>()?;
+        let rhs_t: Vec<Type> = rhs.iter().map(|e| self.typecheck_expression(e)).collect();
+
+        // If any lval is not an lval, return after typechecking all lval and all right expressions
+        if bad_lval {
+            return StatementType::Unit;
+        }
+
         let rhs_t_unfolded = Self::unfold_tuple_types(rhs_t);
+
+        if rhs_t_unfolded.iter().any(|t| *t == Type::Error) {
+            return StatementType::Unit;
+        }
+
         if lhs_t.len() != rhs_t_unfolded.len() {
-            return Err(TypeError::Generic {
-                msg: format!(
-                    "Amount of Lvalues and rhs value mismatch. Lvals: {:?}, RVals: {:?}",
-                    lhs, rhs
+            self.diagnostics.push(Diagnostic::error_with_label(
+                span.clone(),
+                "mismatched number of targets and values in assignment",
+                format!(
+                    "expected {} value(s) on the right-hand side, found {}",
+                    lhs_t.len(),
+                    rhs_t_unfolded.len()
                 ),
-                span: span.clone(),
-            });
+            ));
+            return StatementType::Unit;
         }
-        if !lhs_t
-            .iter()
-            .zip(rhs_t_unfolded.iter())
-            .all(|(l, r)| Self::eq_mod_unknown(l, r))
-        {
-            return Err(TypeError::Generic {
-                msg: format!(
-                    "Types of LHS and RHS are mismatched. LHS: {:?} RHS: {:?}",
-                    lhs_t, rhs_t_unfolded
-                ),
-                span: span.clone(),
-            });
+
+        let one_to_one = rhs.len() == rhs_t_unfolded.len();
+
+        for (i, (l_ty, r_ty)) in lhs_t.iter().zip(rhs_t_unfolded.iter()).enumerate() {
+            if !Self::eq_mod_unknown(l_ty, r_ty) {
+                let prim_span = if one_to_one {
+                    rhs[i].span.clone()
+                } else {
+                    span.clone()
+                };
+                let mut diag = Diagnostic::error_with_label(
+                    prim_span,
+                    "mismatched types in assignment",
+                    format!("expected `{l_ty}`, found `{r_ty}`"),
+                );
+                match &lhs[i] {
+                    LVal::V(vd) => {
+                        diag = diag.with_secondary(
+                            vd.span.clone(),
+                            format!("expected `{l_ty}` due to this declaration"),
+                        );
+                    }
+                    LVal::E(e) => {
+                        if let Some((s, m)) = self.expr_decl_info(e) {
+                            diag = diag.with_secondary(s, m);
+                        }
+                    }
+                    LVal::Error(_) => (),
+                }
+                if one_to_one && let Some((s, m)) = self.expr_decl_info(&rhs[i]) {
+                    diag = diag.with_secondary(s, m);
+                }
+                self.diagnostics.push(diag);
+            }
         }
-        Ok(StatementType::Unit)
+        StatementType::Unit
     }
 
     /// Validates that array dimensions are well-formed.
@@ -680,75 +812,88 @@ impl Typechecker {
 
     /// Typechecks an array declaration, verifying that dimension expressions
     /// are integers and that the initializer (if present) matches the declared type.
-    fn typecheck_arr_decl(&mut self, vd: &VarDeclaration) -> TypeResult {
+    fn typecheck_arr_decl(&mut self, vd: &VarDeclaration) {
         //Check out dimensions Convert dims with value to true empty ones to false
         // [1][][2] -> true, false, true
         debug!("Inside array initialzer");
         let dims_bool: Vec<bool> = vd.dims.iter().map(|d| d.is_some()).collect();
+        let clean = display_name(&vd.name);
+
         if !Self::dim_check(&dims_bool) {
-            return Err(TypeError::Generic {
-                msg: format!(
-                    "A specified dimension cannot follow after an unspecified one, Array {}",
-                    vd.name
-                ),
-                span: vd.span.clone(),
-            });
+            self.diagnostics.push(Diagnostic::error_with_label(
+                vd.span.clone(),
+                format!("invalid array dimensions for `{clean}`"),
+                "a sized dimension cannot follow an unsized `[]` dimension",
+            ));
         }
 
         // Only Int indices allowed!
-        let dims_e: Vec<Type> = vd
-            .dims
-            .iter()
-            .flatten()
-            .map(|e| self.typecheck_expression(e))
-            .collect::<Result<_, _>>()?;
-        if !dims_e.iter().all(|e_t| *e_t == Type::Int) {
-            return Err(TypeError::Generic {
-                msg: format!("Non-Int value used as Index into Array!, Array {}", vd.name),
-                span: vd.span.clone(),
-            });
+        for e in vd.dims.iter().flatten() {
+            let e_t = self.typecheck_expression(e);
+            if e_t != Type::Int && e_t != Type::Error {
+                let mut diag = Diagnostic::error_with_label(
+                    e.span.clone(),
+                    format!("array dimensions for `{clean}` must have type `int`"),
+                    format!("expected `int`, found `{e_t}`"),
+                );
+                if let Some((s, m)) = self.expr_decl_info(e) {
+                    diag = diag.with_secondary(s, m);
+                }
+                self.diagnostics.push(diag);
+            }
         }
         // If dimension is specified an initializer is not allowed!
         let has_spec_dim = dims_bool.iter().any(|b| *b);
         match &vd.init {
             Some(_) if has_spec_dim => {
-                return Err(TypeError::Generic {
-                    msg: "Cannot specify dimensions and initialize array. Not allowed.".to_string(),
-                    span: vd.span.clone(),
-                });
+                self.diagnostics.push(
+                    Diagnostic::error_with_label(
+                        vd.span.clone(),
+                        format!("cannot specify dimensions and initialize array `{clean}`"),
+                        "sized array declaration cannot have an initializer",
+                    )
+                    .with_suggestion("remove the explicit size or remove the initializer"),
+                );
             }
             Some(e) => {
-                let e_t = self.typecheck_expression(e)?;
+                let e_t = self.typecheck_expression(e);
                 match e_t {
-                    Type::Array { elem_type } if *elem_type == Type::Unknown => (),
-                    t if t == vd.var_type => (),
+                    Type::Error => {}
+                    t if Self::eq_mod_unknown(&t, &vd.var_type) => {}
                     // Happens when array is returned by function call
-                    Type::Tuple { elems } if elems[0] == vd.var_type => (),
+                    Type::Tuple { elems }
+                        if elems.len() == 1 && Self::eq_mod_unknown(&elems[0], &vd.var_type) => {}
                     t => {
-                        return Err(TypeError::MismatchedTypes {
-                            msg: format!("Initializer has wrong type for the array. Found {}", t),
-                            expected: vd.var_type.clone(),
-                            span: e.span.clone(),
-                        });
+                        let mut diag = Diagnostic::error_with_label(
+                            e.span.clone(),
+                            format!("mismatched initializer type for array `{clean}`"),
+                            format!("expected `{}`, found `{t}`", vd.var_type),
+                        )
+                        .with_secondary(
+                            vd.span.clone(),
+                            format!("expected `{}` due to this declaration", vd.var_type),
+                        );
+                        if let Some((s, m)) = self.expr_decl_info(e) {
+                            diag = diag.with_secondary(s, m);
+                        }
+                        self.diagnostics.push(diag);
                     }
                 }
             }
             None => (),
         }
-
-        Ok(())
     }
 
     /// Typechecks the left-hand side of an assignment.
     ///
     /// For [`LVal::V`], adds the variable to the symbol table.
     /// For [`LVal::E`], checks that the expression is a valid l-value.
-    pub fn typecheck_lval(&mut self, l: &LVal) -> Result<Type, TypeError> {
+    pub fn typecheck_lval(&mut self, l: &LVal) -> Type {
         match l {
             LVal::E(Expression {
                 kind: ExpressionKind::Var(n),
                 ..
-            }) if n == "_" => Ok(Type::Unknown),
+            }) if n == "_" => Type::Unknown,
             LVal::E(e) => self.typecheck_expression(e),
             LVal::V(vd) => {
                 // add to symbol table
@@ -757,156 +902,248 @@ impl Typechecker {
                     vd.var_type.clone(),
                     Some(vd.span.clone()),
                 );
-                Ok(vd.var_type.clone())
+                vd.var_type.clone()
             }
-            LVal::Error(_span) => todo!("Typechecking for Error LVal is not implemented yet"),
+            LVal::Error(_) => Type::Error,
         }
     }
 
     /// Typechecks an expression, returning its [`Type`].
     //#[instrument(skip(self), level = "debug")]
-    pub fn typecheck_expression(&mut self, expr: &Expression) -> Result<Type, TypeError> {
-        let e = match &expr.kind {
+    pub fn typecheck_expression(&mut self, expr: &Expression) -> Type {
+        match &expr.kind {
             ExpressionKind::Error => Type::Error,
-            ExpressionKind::Var(name) => self.symtab.get(name).t.clone(),
+            ExpressionKind::Var(name) => match self.symtab.get_opt(name) {
+                Some(e) => e.t.clone(),
+                None => Type::Error,
+            },
             ExpressionKind::Int(_) => Type::Int,
             ExpressionKind::Bool(_) => Type::Bool,
             ExpressionKind::ArrayLit(es) => {
-                let es_t: Vec<Type> = es
-                    .iter()
-                    .map(|e| self.typecheck_expression(e))
-                    .collect::<Result<_, _>>()?;
-                match es_t.as_slice() {
-                    [] => Type::Array {
+                let es_t: Vec<Type> = es.iter().map(|e| self.typecheck_expression(e)).collect();
+                if es_t.is_empty() {
+                    return Type::Array {
                         elem_type: Box::new(Type::Unknown),
-                    }, // {} case
-                    [x, rest @ ..] => {
-                        if !rest.iter().all(|e_t| *x == *e_t) {
-                            return Err(TypeError::Generic {
-                                msg: format!(
-                                    "Not all elements in array literal have same type. Types: {:?}",
-                                    es_t
-                                ),
-                                span: expr.span.clone(),
-                            });
-                        }
-                        Type::Array {
-                            elem_type: Box::new(x.clone()),
-                        }
+                    };
+                }
+
+                let Some((first_idx, first_t)) =
+                    es_t.iter().enumerate().find(|(_, t)| **t != Type::Error)
+                else {
+                    return Type::Error;
+                };
+
+                let mut elem_t = first_t.clone();
+                let mut had_error = false;
+
+                for (i, t) in es_t.iter().enumerate() {
+                    if *t == Type::Error {
+                        continue;
+                    }
+                    if !Self::eq_mod_unknown(&elem_t, t) {
+                        let diag = Diagnostic::error_with_label(
+                            es[i].span.clone(),
+                            "mismatched element types in array literal",
+                            format!("expected `{elem_t}`, found `{t}`"),
+                        )
+                        .with_secondary(
+                            es[first_idx].span.clone(),
+                            format!("first element has type `{elem_t}` here"),
+                        );
+                        self.diagnostics.push(diag);
+                        had_error = true;
+                    } else {
+                        elem_t = Self::unify(&elem_t, t);
+                    }
+                }
+
+                if had_error {
+                    Type::Error
+                } else {
+                    Type::Array {
+                        elem_type: Box::new(elem_t),
                     }
                 }
             }
-            ExpressionKind::Unary(UnaryOp::Neg, e) => {
-                let e_ty = self.typecheck_expression(e)?;
-                if e_ty != Type::Int {
-                    return Err(TypeError::MismatchedTypes {
-                        msg: format!("Expression has wrong type in Unary. Found {}", e_ty),
-                        expected: Type::Int,
-                        span: expr.span.clone(),
-                    });
+            ExpressionKind::Unary(op, e) => {
+                let e_ty = self.typecheck_expression(e);
+
+                if e_ty == Type::Error {
+                    return Type::Error;
+                }
+
+                let (expected, op_str) = match op {
+                    UnaryOp::Neg => (Type::Int, "-"),
+                    UnaryOp::Not => (Type::Bool, "!"),
+                };
+                if e_ty != expected {
+                    let mut diag = Diagnostic::error_with_label(
+                        e.span.clone(),
+                        format!("invalid operand type for unary `{op_str}`"),
+                        format!("expected `{expected}`, found `{e_ty}`"),
+                    );
+                    if let Some((sec_span, sec_msg)) = self.expr_decl_info(e) {
+                        diag = diag.with_secondary(sec_span, sec_msg);
+                    }
+                    self.diagnostics.push(diag);
+                    return Type::Error;
                 }
                 e_ty
             }
-            ExpressionKind::Unary(UnaryOp::Not, e) => {
-                let e_ty = self.typecheck_expression(e)?;
-                if e_ty != Type::Bool {
-                    return Err(TypeError::MismatchedTypes {
-                        msg: format!("Expression has wrong type in Unary. Found {}", e_ty),
-                        expected: Type::Bool,
-                        span: expr.span.clone(),
-                    });
-                }
-                e_ty
+            ExpressionKind::Binary(bin_op, e1, e2) => {
+                self.typecheck_binary(bin_op, e1, e2, &expr.span)
             }
-            ExpressionKind::Binary(bin_op, e1, e2) => self.typecheck_binary(bin_op, e1, e2)?,
-            ExpressionKind::Call { name, args } => {
-                self.typecheck_fun_call(name, args, &expr.span)?
-            }
+            ExpressionKind::Call { name, args } => self.typecheck_fun_call(name, args, &expr.span),
             ExpressionKind::Subscript(e1, e2) => {
-                let arr_t = self.typecheck_expression(e1)?;
-                let idx_t = self.typecheck_expression(e2)?;
-                match (&arr_t, &idx_t) {
-                    (Type::Array { elem_type }, Type::Int) => *elem_type.clone(),
-                    (_, Type::Int) => {
-                        return Err(TypeError::Generic {
-                            msg: format!("Trying to Index into non-array. Found {}", arr_t.clone()),
-                            span: expr.span.clone(),
-                        });
+                let arr_t = self.typecheck_expression(e1);
+                let idx_t = self.typecheck_expression(e2);
+
+                if idx_t != Type::Int && idx_t != Type::Error {
+                    let mut diag = Diagnostic::error_with_label(
+                        e2.span.clone(),
+                        "array index must have type `int`",
+                        format!("expected `int`, found `{idx_t}`"),
+                    );
+                    if let Some((sec_span, sec_msg)) = self.expr_decl_info(e2) {
+                        diag = diag.with_secondary(sec_span, sec_msg);
                     }
-                    (_, _) => {
-                        return Err(TypeError::Generic {
-                            msg: format!("Array Index must be an integer. Found {}", idx_t.clone()),
-                            span: expr.span.clone(),
-                        });
+                    self.diagnostics.push(diag);
+                }
+
+                match arr_t {
+                    Type::Error => Type::Error,
+                    Type::Array { elem_type } => *elem_type,
+                    other => {
+                        let mut diag = Diagnostic::error_with_label(
+                            e1.span.clone(),
+                            format!("cannot index into non-array type `{other}`"),
+                            format!("expected an array, found `{other}`"),
+                        );
+                        if let Some((sec_span, sec_msg)) = self.expr_decl_info(e1) {
+                            diag = diag.with_secondary(sec_span, sec_msg);
+                        }
+                        self.diagnostics.push(diag);
+                        Type::Error
                     }
                 }
             }
             ExpressionKind::Dot(e, field) => {
-                let e_ty = self.typecheck_expression(e)?;
+                let e_ty = self.typecheck_expression(e);
+                if e_ty == Type::Error {
+                    return Type::Error;
+                }
+
                 if let Type::Record(name) = e_ty {
-                    match self.symtab.get_attr(&name) {
+                    let Some(entry) = self.symtab.get_opt(&name) else {
+                        let mut diag = Diagnostic::error_with_label(
+                            expr.span.clone(),
+                            format!("unknown record type `{name}`"),
+                            format!("record type `{name}` is not defined"),
+                        );
+                        if let Some((sec_span, sec_msg)) = self.expr_decl_info(e) {
+                            diag = diag.with_secondary(sec_span, sec_msg);
+                        }
+                        self.diagnostics.push(diag);
+                        return Type::Error;
+                    };
+                    let decl_span = entry.decl_span.clone();
+                    match &entry.attr {
                         Attr::Record(rec_entry) => match rec_entry.find(field) {
                             Some(md) => md.member_t.clone(),
                             None => {
-                                return Err(TypeError::Generic {
-                                    msg: format!(
-                                        "Field {} does not exist in Record {}",
-                                        field, name
-                                    ),
-                                    span: expr.span.clone(),
-                                });
+                                let available: Vec<String> = rec_entry
+                                    .members
+                                    .iter()
+                                    .map(|(m, _)| format!("`{m}`"))
+                                    .collect();
+                                let mut diag = Diagnostic::error_with_label(
+                                    expr.span.clone(),
+                                    format!("unknown field `{field}` on record `{name}`"),
+                                    format!("record `{name}` has no field named `{field}`"),
+                                );
+                                if let Some(span) = decl_span {
+                                    diag = diag.with_secondary(
+                                        span,
+                                        format!("record `{name}` defined here"),
+                                    );
+                                }
+                                if !available.is_empty() {
+                                    diag = diag.with_suggestion(format!(
+                                        "available fields are: {}",
+                                        available.join(", ")
+                                    ));
+                                }
+                                self.diagnostics.push(diag);
+                                Type::Error
                             }
                         },
-                        _ => panic!("Internal Error: Record with non- record attribute"),
+                        _ => {
+                            let mut diag = Diagnostic::error_with_label(
+                                expr.span.clone(),
+                                format!("`{name}` is not a record type"),
+                                format!("cannot access field `{field}` on `{name}`"),
+                            );
+                            if let Some(span) = decl_span {
+                                diag = diag.with_secondary(span, format!("`{name}` defined here"));
+                            }
+                            self.diagnostics.push(diag);
+                            Type::Error
+                        }
                     }
                 } else {
-                    return Err(TypeError::Generic {
-                        msg: "Expression in Dot has to be Record Type!".to_string(),
-                        span: expr.span.clone(),
-                    });
+                    let mut diag = Diagnostic::error_with_label(
+                        e.span.clone(),
+                        format!("cannot access field `{field}` on non-record type `{e_ty}`"),
+                        format!("expected a record type, found `{e_ty}`"),
+                    );
+                    if let Some((sec_span, sec_msg)) = self.expr_decl_info(e) {
+                        diag = diag.with_secondary(sec_span, sec_msg);
+                    }
+                    self.diagnostics.push(diag);
+                    Type::Error
                 }
             }
-        };
-        Ok(e)
+        }
     }
 
     /// Typechecks a function call expression.
     ///
     /// Rejects calls to functions with no return value (those are procedure calls
     /// and must appear as statements).
-    fn typecheck_fun_call(
-        &mut self,
-        name: &str,
-        args: &[Expression],
-        span: &logos::Span,
-    ) -> Result<Type, TypeError> {
-        match self.check_fun_args(name, args, span)? {
-            Type::Tuple { elems } if elems.is_empty() => Err(TypeError::Generic {
-                msg: format!(
-                    "Function call needs non-empty return type. Function was {}",
-                    name
-                ),
-                span: span.clone(),
-            }),
-            t @ Type::Tuple { .. } => Ok(t),
-            // NEW CHANGE. FUNCTIONS WITH ONE RETURN VALUE RETURN THAT LIKE INT AND NOT (INT)
-            t => Ok(t),
+    fn typecheck_fun_call(&mut self, name: &str, args: &[Expression], span: &Span) -> Type {
+        match self.check_fun_args(name, args, span) {
+            Type::Error => Type::Error,
+            Type::Tuple { elems } if elems.is_empty() => {
+                let mut diag = Diagnostic::error_with_label(
+                    span.clone(),
+                    format!("procedure `{name}` does not return a value"),
+                    "cannot use a procedure call as an expression",
+                )
+                .with_suggestion("call it as a standalone statement instead of using its value");
+                if let Some(d_span) = self.symtab.get_opt(name).and_then(|e| e.decl_span.clone()) {
+                    diag = diag.with_secondary(d_span, format!("procedure `{name}` defined here"));
+                }
+                self.diagnostics.push(diag);
+                Type::Error
+            }
+            t => t,
         }
     }
 
     /// Shared helper for function and procedure calls. Verifies that argument
     /// types match the parameter types in the function signature.
-    fn check_fun_args(
-        &mut self,
-        name: &str,
-        args: &[Expression],
-        span: &logos::Span,
-    ) -> Result<Type, TypeError> {
+    fn check_fun_args(&mut self, name: &str, args: &[Expression], span: &Span) -> Type {
         let args_t: Vec<Type> = args
             .iter()
             .map(|arg| self.typecheck_expression(arg))
-            .collect::<Result<_, _>>()?;
-        let (param_t, ret_t) = match self.symtab.get(name) {
+            .collect();
+        let Some(entry) = self.symtab.get_opt(name) else {
+            // Undefined function was already reported by the Resolver, so just propagate the error
+            return Type::Error;
+        };
+
+        let decl_span = entry.decl_span.clone();
+        let (param_t, ret_t, kind) = match entry {
             Entry {
                 t:
                     Type::FunType {
@@ -915,56 +1152,82 @@ impl Typechecker {
                     },
                 attr: Attr::Fun { .. },
                 ..
-            } => (param_types, ret_type),
-            // Record Constructor!
+            } => (param_types.clone(), ret_type.clone(), "function"),
             Entry {
                 t,
                 attr: Attr::Record(rec_entry),
                 ..
             } => {
-                let mut param_types = Vec::new();
-                for (_, mem_entry) in &rec_entry.members {
-                    param_types.push(mem_entry.member_t.clone());
-                }
-                // meh that clone is annoying
-                (&param_types.clone(), &vec![t.clone()])
+                let param_types = rec_entry
+                    .members
+                    .iter()
+                    .map(|(_, mem)| mem.member_t.clone())
+                    .collect();
+                (param_types, vec![t.clone()], "record")
             }
-
-            Entry {
-                t: Type::FunType { .. },
-                ..
-            } => panic!("Internal Error: Function has non-function and non-record attribute!"),
-            _ => panic!("Function has non-function Type!"),
+            other => {
+                let clean = display_name(name);
+                let mut diag = Diagnostic::error_with_label(
+                    span.clone(),
+                    format!("`{clean}` is not a function or record"),
+                    format!("cannot call value of type `{}`", other.t),
+                );
+                if let Some(d_span) = decl_span {
+                    diag = diag.with_secondary(d_span, format!("`{clean}` was declared here"));
+                }
+                self.diagnostics.push(diag);
+                return Type::Error;
+            }
         };
+
         if param_t.len() != args.len() {
-            return Err(TypeError::Generic {
-                msg: format!(
-                    "Number of arguments provided does not fit with function type.\n Function {} Param Type : {:?} and Arguments {:?}",
-                    name, param_t, args
+            let mut diag = Diagnostic::error_with_label(
+                span.clone(),
+                format!("wrong number of arguments to {kind} `{name}`"),
+                format!(
+                    "expected {} argument(s), found {}",
+                    param_t.len(),
+                    args.len()
                 ),
-                span: span.clone(),
-            });
+            );
+            if let Some(d_span) = decl_span {
+                diag = diag.with_secondary(d_span, format!("{kind} `{name}` defined here"));
+            }
+            self.diagnostics.push(diag);
+            return Type::Error;
         }
-        // This does not work. it is an array inside but eq mod unknown is not recursive
-        if !param_t
-            .iter()
-            .zip(args_t)
-            .all(|(t1, t2)| Self::eq_mod_unknown(t1, &t2))
-        {
-            return Err(TypeError::Generic {
-                msg: format!(
-                    "Some arguments do not have the the correct type.\n Function {}",
-                    name
-                ),
-                span: span.clone(),
-            });
+
+        let mut had_error = false;
+        for ((expected, actual), arg) in param_t.iter().zip(args_t.iter()).zip(args.iter()) {
+            if *actual == Type::Error {
+                continue;
+            }
+            if !Self::eq_mod_unknown(expected, actual) {
+                let mut diag = Diagnostic::error_with_label(
+                    arg.span.clone(),
+                    format!("mismatched argument type in call to `{name}`"),
+                    format!("expected `{expected}`, found `{actual}`"),
+                );
+                if let Some((sec_span, sec_msg)) = self.expr_decl_info(arg) {
+                    diag = diag.with_secondary(sec_span, sec_msg);
+                }
+                if let Some(d_span) = &decl_span {
+                    diag = diag
+                        .with_secondary(d_span.clone(), format!("{kind} `{name}` defined here"));
+                }
+                self.diagnostics.push(diag);
+                had_error = true;
+            }
         }
+
+        if had_error {
+            return Type::Error;
+        }
+
         match ret_t.len() {
-            0 => Ok(Type::Tuple { elems: vec![] }), // Used for procedures!
-            1 => Ok(ret_t[0].clone()),
-            _ => Ok(Type::Tuple {
-                elems: ret_t.clone(),
-            }),
+            0 => Type::Tuple { elems: vec![] },
+            1 => ret_t[0].clone(),
+            _ => Type::Tuple { elems: ret_t },
         }
     }
 
@@ -976,27 +1239,39 @@ impl Typechecker {
         op: &BinOp,
         e1: &Expression,
         e2: &Expression,
-    ) -> Result<Type, TypeError> {
-        let e1_ty = self.typecheck_expression(e1)?;
-        let e2_ty = self.typecheck_expression(e2)?;
+        span: &Span,
+    ) -> Type {
+        let e1_ty = self.typecheck_expression(e1);
+        let e2_ty = self.typecheck_expression(e2);
 
-        let res_ty = match op {
+        // If either side already is error, stay silent
+        if e1_ty == Type::Error || e2_ty == Type::Error {
+            return Type::Error;
+        }
+
+        match op {
             BinOp::Add if is_arr(&e1_ty) && is_arr(&e2_ty) => {
                 if !Self::eq_mod_unknown(&e1_ty, &e2_ty) {
-                    return Err(TypeError::Generic {
-                        msg: format!("Array Types are not equal. Found {} and {}", e1_ty, e2_ty),
-                        span: e1.span.clone(),
-                    });
+                    let mut diag = Diagnostic::error_with_label(
+                        span.clone(),
+                        "cannot concatenate arrays of different types",
+                        format!("cannot apply `+` to `{e1_ty}` and `{e2_ty}`"),
+                    );
+                    if let Some((s, m)) = self.expr_decl_info(e1) {
+                        diag = diag.with_secondary(s, m);
+                    }
+                    if let Some((s, m)) = self.expr_decl_info(e2) {
+                        diag = diag.with_secondary(s, m);
+                    }
+                    self.diagnostics.push(diag);
+                    return Type::Error;
                 }
-                // Since types are equal we know that they have same dimension
-                // If unknown was used we want the more specific type
-                // Or is that handled in the statement Similar for function callsS
                 Self::unify(&e1_ty, &e2_ty)
             }
             BinOp::Add | BinOp::Sub | BinOp::Mult | BinOp::Div | BinOp::Mod
                 if e1_ty == Type::Int && e2_ty == Type::Int =>
             {
-                e1_ty
+                Type::Int
             }
             BinOp::Lt | BinOp::Leq | BinOp::Gt | BinOp::Geq
                 if e1_ty == Type::Int && e2_ty == Type::Int =>
@@ -1004,22 +1279,64 @@ impl Typechecker {
                 Type::Bool
             }
             BinOp::And | BinOp::Or if e1_ty == Type::Bool && e2_ty == Type::Bool => Type::Bool,
-            BinOp::Eq | BinOp::Neq if e1_ty == e2_ty => Type::Bool,
+            BinOp::Eq | BinOp::Neq if Self::eq_mod_unknown(&e1_ty, &e2_ty) => Type::Bool,
             _ => {
-                return Err(TypeError::Generic {
-                    msg: format!(
-                        "Binary Operation with invalid Type! e1 : {} e2 : {}",
-                        e1_ty, e2_ty
-                    ),
-                    span: e1.span.clone(),
-                });
+                let op_s = binop_str(op);
+                let mut diag = Diagnostic::error_with_label(
+                    span.clone(),
+                    format!("invalid operand types for binary `{op_s}`"),
+                    format!("cannot apply `{op_s}` to `{e1_ty}` and `{e2_ty}`"),
+                );
+                if let Some((s, m)) = self.expr_decl_info(e1) {
+                    diag = diag.with_secondary(s, m);
+                }
+                if let Some((s, m)) = self.expr_decl_info(e2) {
+                    diag = diag.with_secondary(s, m);
+                }
+                self.diagnostics.push(diag);
+                Type::Error
             }
-        };
-        Ok(res_ty)
+        }
+    }
+
+    /// Returns the declaration span and context label
+    /// for a variable or record field expression.
+    fn expr_decl_info(&self, expr: &Expression) -> Option<(Span, String)> {
+        match &expr.kind {
+            ExpressionKind::Var(name) => {
+                let entry = self.symtab.get_opt(name)?;
+                let decl_span = entry.decl_span.clone()?;
+                let clean = display_name(name);
+                Some((
+                    decl_span,
+                    format!("`{clean}` was declared with type `{}` here", entry.t),
+                ))
+            }
+            ExpressionKind::Dot(base, field) => {
+                if let ExpressionKind::Var(var_name) = &base.kind
+                    && let Some(var_entry) = self.symtab.get_opt(var_name)
+                    && let Type::Record(rec_name) = &var_entry.t
+                    && let Some(rec_entry) = self.symtab.get_opt(rec_name)
+                    && let Attr::Record(rec) = &rec_entry.attr
+                    && let Some(mem) = rec.find(field)
+                {
+                    let decl_span = mem.decl_span.clone()?;
+                    return Some((
+                        decl_span,
+                        format!(
+                            "field `{field}` was declared with type `{}` here",
+                            mem.member_t
+                        ),
+                    ));
+                }
+                None
+            }
+            _ => None,
+        }
     }
 }
 
-/// Returns `true` if an [`LVal`] is a valid assignment target.
+/// Returns `true` if an [`LVal`] is a valid assignment target, or if it is of kind [`ExpressionKind::Error`].
 ///
 /// Variables, subscripts, and field accesses are valid l-values.
 /// Literals, binary operations, and function calls are not.
@@ -1028,13 +1345,41 @@ fn is_lval(l: &LVal) -> bool {
         LVal::V(_) => true,
         LVal::E(e) => matches!(
             e.kind,
-            ExpressionKind::Var(..) | ExpressionKind::Dot(..) | ExpressionKind::Subscript(..)
+            ExpressionKind::Var(..)
+                | ExpressionKind::Dot(..)
+                | ExpressionKind::Subscript(..)
+                | ExpressionKind::Error
         ),
-        LVal::Error(_span) => todo!("Typechecking for Error LVal is not implemented yet"),
+        LVal::Error(_) => true,
     }
+}
+
+/// Strips the resolver's numeric suffix (e.g. `x.0` -> `x`)
+/// for user-facing error messages.
+fn display_name(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
 }
 
 /// Returns `true` if the type is an array type.
 pub fn is_arr(t: &Type) -> bool {
     matches!(t, Type::Array { .. })
+}
+
+/// Returns the corresponding string of a `BinOp`
+fn binop_str(op: &BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mult => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::And => "&",
+        BinOp::Or => "|",
+        BinOp::Lt => "<",
+        BinOp::Leq => "<=",
+        BinOp::Gt => ">",
+        BinOp::Geq => ">=",
+        BinOp::Eq => "==",
+        BinOp::Neq => "!=",
+    }
 }

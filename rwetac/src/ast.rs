@@ -179,6 +179,8 @@ pub struct Function {
     pub name: String,
     /// Parameter names. Their types are encoded in `f_type`.
     pub params: Vec<Option<String>>,
+    /// Spans of each parameter declaration, for better error reporting
+    pub param_spans: Vec<Option<Span>>,
     /// The full function type, including parameter and return types.
     pub f_type: Type,
     pub body: Block,

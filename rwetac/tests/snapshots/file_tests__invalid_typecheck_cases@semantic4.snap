@@ -2,4 +2,11 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: One Return type does not match with the return statement. Found [Bool]. Expected [Int]
+error: mismatched return type
+  --> <input>:2:12
+  |
+1 | f(): int {
+  | - function declared to return `(int)` here
+2 |     return true  // wrong type
+  |            ^^^^ expected `int`, found `bool`
+  |

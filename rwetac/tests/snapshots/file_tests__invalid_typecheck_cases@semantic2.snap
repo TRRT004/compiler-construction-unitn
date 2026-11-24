@@ -2,4 +2,13 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Function call needs non-empty return type. Function was printHello
+error: procedure `printHello` does not return a value
+  --> <input>:6:14
+  |
+1 | printHello() {
+  | ---------- procedure `printHello` defined here
+ ...
+6 |     x: int = printHello()  // cannot use procedure in expression
+  |              ^^^^^^^^^^^^ cannot use a procedure call as an expression
+  |
+  = help: call it as a standalone statement instead of using its value

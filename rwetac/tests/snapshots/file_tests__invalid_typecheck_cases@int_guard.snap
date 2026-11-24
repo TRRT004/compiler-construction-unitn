@@ -2,4 +2,12 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Guard of If has to have Type bool. Found int
+error: condition of `if` statement must be `bool`
+  --> <input>:3:8
+  |
+2 | count(n : int) : int {
+  |       ------- `n` was declared with type `int` here
+3 |     if n {
+  |        ^ expected `bool`, found `int`
+  |
+  = help: compare the integer to produce a `bool`, e.g. `x != 0`

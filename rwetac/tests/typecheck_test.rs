@@ -5,10 +5,12 @@ mod common;
 fn binary_wrong_type() {
     let out = common::typecheck_expr("1 + true");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Binary Operation with invalid Type! e1 : int e2 : bool",
-        span: 0..1,
-    }
+    error: invalid operand types for binary `+`
+      --> <input>:1:1
+      |
+    1 | 1 + true
+      | ^^^^^^^^ cannot apply `+` to `int` and `bool`
+      |
     "#);
 }
 
@@ -16,10 +18,12 @@ fn binary_wrong_type() {
 fn binary_wrong_type2() {
     let out = common::typecheck_expr("1 < true");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Binary Operation with invalid Type! e1 : int e2 : bool",
-        span: 0..1,
-    }
+    error: invalid operand types for binary `<`
+      --> <input>:1:1
+      |
+    1 | 1 < true
+      | ^^^^^^^^ cannot apply `<` to `int` and `bool`
+      |
     "#);
 }
 
@@ -45,10 +49,12 @@ fn binary_correct_type2() {
 fn arr_lit_wrong() {
     let out = common::typecheck_expr("{1, true}");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Not all elements in array literal have same type. Types: [Int, Bool]",
-        span: 0..9,
-    }
+    error: mismatched element types in array literal
+      --> <input>:1:5
+      |
+    1 | {1, true}
+      |  -  ^^^^ first element has type `int` here, expected `int`, found `bool`
+      |
     "#);
 }
 
@@ -56,10 +62,12 @@ fn arr_lit_wrong() {
 fn assign_wrong_type() {
     let out = common::typecheck_stmt("x, y = 1 + 3, 4, 5");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Amount of Lvalues and rhs value mismatch. Lvals: [E(Expression { kind: Var(\"x\"), span: 0..1 }), E(Expression { kind: Var(\"y\"), span: 3..4 })], RVals: [Expression { kind: Binary(Add, Expression { kind: Int(1), span: 7..8 }, Expression { kind: Int(3), span: 11..12 }), span: 7..12 }, Expression { kind: Int(4), span: 14..15 }, Expression { kind: Int(5), span: 17..18 }]",
-        span: 0..18,
-    }
+    error: mismatched number of targets and values in assignment
+      --> <input>:1:1
+      |
+    1 | x, y = 1 + 3, 4, 5
+      | ^^^^^^^^^^^^^^^^^^ expected 2 value(s) on the right-hand side, found 3
+      |
     "#);
 }
 
@@ -67,10 +75,12 @@ fn assign_wrong_type() {
 fn assign_wrong_type2() {
     let out = common::typecheck_stmt("a[2] = 1, 2");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Amount of Lvalues and rhs value mismatch. Lvals: [E(Expression { kind: Subscript(Expression { kind: Var(\"a\"), span: 0..1 }, Expression { kind: Int(2), span: 2..3 }), span: 0..4 })], RVals: [Expression { kind: Int(1), span: 7..8 }, Expression { kind: Int(2), span: 10..11 }]",
-        span: 0..11,
-    }
+    error: mismatched number of targets and values in assignment
+      --> <input>:1:1
+      |
+    1 | a[2] = 1, 2
+      | ^^^^^^^^^^^ expected 1 value(s) on the right-hand side, found 2
+      |
     "#);
 }
 
@@ -78,10 +88,12 @@ fn assign_wrong_type2() {
 fn assign_wrong_type3() {
     let out = common::typecheck_stmt("x = test(1,2)");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Amount of Lvalues and rhs value mismatch. Lvals: [E(Expression { kind: Var(\"x\"), span: 0..1 })], RVals: [Expression { kind: Call { name: \"test\", args: [Expression { kind: Int(1), span: 9..10 }, Expression { kind: Int(2), span: 11..12 }] }, span: 4..13 }]",
-        span: 0..13,
-    }
+    error: mismatched number of targets and values in assignment
+      --> <input>:1:1
+      |
+    1 | x = test(1,2)
+      | ^^^^^^^^^^^^^ expected 1 value(s) on the right-hand side, found 2
+      |
     "#);
 }
 
@@ -89,10 +101,12 @@ fn assign_wrong_type3() {
 fn assign_wrong_type4() {
     let out = common::typecheck_stmt("2 = 6");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Not all expression on LHS are Lvalues. LVals : [E(Expression { kind: Int(2), span: 0..1 })]",
-        span: 0..5,
-    }
+    error: invalid assignment target
+      --> <input>:1:1
+      |
+    1 | 2 = 6
+      | ^ cannot assign to this expression
+      |
     "#);
 }
 
@@ -148,10 +162,12 @@ fn arr_decl_correct_type() {
 fn arr_decl_wrong_type() {
     let out = common::typecheck_stmt("a : int[][4]");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "A specified dimension cannot follow after an unspecified one, Array a",
-        span: 0..12,
-    }
+    error: invalid array dimensions for `a`
+      --> <input>:1:1
+      |
+    1 | a : int[][4]
+      | ^^^^^^^^^^^^ a sized dimension cannot follow an unsized `[]` dimension
+      |
     "#);
 }
 
@@ -159,10 +175,12 @@ fn arr_decl_wrong_type() {
 fn arr_decl_wrong_type2() {
     let out = common::typecheck_stmt("a : int[4][][5]");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "A specified dimension cannot follow after an unspecified one, Array a",
-        span: 0..15,
-    }
+    error: invalid array dimensions for `a`
+      --> <input>:1:1
+      |
+    1 | a : int[4][][5]
+      | ^^^^^^^^^^^^^^^ a sized dimension cannot follow an unsized `[]` dimension
+      |
     "#);
 }
 
@@ -170,10 +188,13 @@ fn arr_decl_wrong_type2() {
 fn arr_decl_wrong_type3() {
     let out = common::typecheck_stmt("a : int[3] = {1,2}");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Cannot specify dimensions and initialize array. Not allowed.",
-        span: 0..10,
-    }
+    error: cannot specify dimensions and initialize array `a`
+      --> <input>:1:1
+      |
+    1 | a : int[3] = {1,2}
+      | ^^^^^^^^^^ sized array declaration cannot have an initializer
+      |
+      = help: remove the explicit size or remove the initializer
     "#);
 }
 
@@ -181,10 +202,12 @@ fn arr_decl_wrong_type3() {
 fn arr_decl_wrong_type4() {
     let out = common::typecheck_stmt("a : int[true]");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Non-Int value used as Index into Array!, Array a",
-        span: 0..13,
-    }
+    error: array dimensions for `a` must have type `int`
+      --> <input>:1:9
+      |
+    1 | a : int[true]
+      |         ^^^^ expected `int`, found `bool`
+      |
     "#);
 }
 
@@ -192,10 +215,12 @@ fn arr_decl_wrong_type4() {
 fn arr_decl_wrong_type5() {
     let out = common::typecheck_stmt("a : int[test(2, 3)]");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Non-Int value used as Index into Array!, Array a",
-        span: 0..19,
-    }
+    error: array dimensions for `a` must have type `int`
+      --> <input>:1:9
+      |
+    1 | a : int[test(2, 3)]
+      |         ^^^^^^^^^^ expected `int`, found `(int, int)`
+      |
     "#);
 }
 
@@ -203,15 +228,12 @@ fn arr_decl_wrong_type5() {
 fn arr_decl_wrong_type6() {
     let out = common::typecheck_stmt("b_arr : int[][] = {1,2}");
     assert_snapshot!(out, @r#"
-    Failure: MismatchedTypes {
-        msg: "Initializer has wrong type for the array. Found int[]",
-        expected: Array {
-            elem_type: Array {
-                elem_type: Int,
-            },
-        },
-        span: 18..23,
-    }
+    error: mismatched initializer type for array `b_arr`
+      --> <input>:1:19
+      |
+    1 | b_arr : int[][] = {1,2}
+      | ---------------   ^^^^^ expected `int[][]` due to this declaration, expected `int[][]`, found `int[]`
+      |
     "#);
 }
 
@@ -231,11 +253,13 @@ fn length_correct_type2() {
 fn if_guard_wrong_type() {
     let out = common::typecheck_stmt("if 2 {}");
     assert_snapshot!(out, @r#"
-    Failure: MismatchedTypes {
-        msg: "Guard of If has to have Type bool. Found int",
-        expected: Bool,
-        span: 3..4,
-    }
+    error: condition of `if` statement must be `bool`
+      --> <input>:1:4
+      |
+    1 | if 2 {}
+      |    ^ expected `bool`, found `int`
+      |
+      = help: compare the integer to produce a `bool`, e.g. `x != 0`
     "#);
 }
 
@@ -243,10 +267,54 @@ fn if_guard_wrong_type() {
 fn while_guard_wrong_type() {
     let out = common::typecheck_stmt("while 2 {}");
     assert_snapshot!(out, @r#"
-    Failure: MismatchedTypes {
-        msg: "Guard of While has to have Type bool. Found int",
-        expected: Bool,
-        span: 6..7,
-    }
+    error: condition of while loop must be `bool`
+      --> <input>:1:7
+      |
+    1 | while 2 {}
+      |       ^ expected `bool`, found `int`
+      |
+      = help: compare the integer to produce a `bool`, e.g. `x != 0`
+    "#);
+}
+
+#[test]
+fn multiple_errors_accumulated_in_block() {
+    let out = common::typecheck_stmt("{\n    if 2 {}\n    while 3 {}\n    x = true\n}");
+    assert_snapshot!(out, @r#"
+    error: condition of `if` statement must be `bool`
+      --> <input>:2:8
+      |
+    2 |     if 2 {}
+      |        ^ expected `bool`, found `int`
+      |
+      = help: compare the integer to produce a `bool`, e.g. `x != 0`
+
+    error: condition of while loop must be `bool`
+      --> <input>:3:11
+      |
+    3 |     while 3 {}
+      |           ^ expected `bool`, found `int`
+      |
+      = help: compare the integer to produce a `bool`, e.g. `x != 0`
+
+    error: mismatched types in assignment
+      --> <input>:4:9
+      |
+    4 |     x = true
+      |         ^^^^ expected `int`, found `bool`
+      |
+    "#);
+}
+
+#[test]
+fn error_type_poisoning_prevents_cascades() {
+    let out = common::typecheck_stmt("x = (1 + true) + 5");
+    assert_snapshot!(out, @r#"
+    error: invalid operand types for binary `+`
+      --> <input>:1:5
+      |
+    1 | x = (1 + true) + 5
+      |     ^^^^^^^^^^ cannot apply `+` to `int` and `bool`
+      |
     "#);
 }

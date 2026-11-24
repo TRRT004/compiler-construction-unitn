@@ -507,8 +507,8 @@ mod tests {
             panic!("expected return");
         };
         assert!(matches!(vals[0].kind, ExpressionKind::Error));
-        // Typechecking should not panic on poisoned ExpressionKind::Error (unlike unpoisoned missing names).
-        assert!(Typechecker::new().typecheck(&prog).is_err());
+        // Typechecking should not panic or emit a redundant cascaded error on poisoned ExpressionKind::Error.
+        assert!(Typechecker::new().typecheck(&prog).is_ok());
     }
 
     #[test]

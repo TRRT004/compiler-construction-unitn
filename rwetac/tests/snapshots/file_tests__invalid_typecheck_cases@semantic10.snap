@@ -2,4 +2,10 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Cannot specify dimensions and initialize array. Not allowed.
+error: cannot specify dimensions and initialize array `a`
+  --> <input>:2:5
+  |
+2 |     a: int[3] = {1, 2, 3}
+  |     ^^^^^^^^^ sized array declaration cannot have an initializer
+  |
+  = help: remove the explicit size or remove the initializer

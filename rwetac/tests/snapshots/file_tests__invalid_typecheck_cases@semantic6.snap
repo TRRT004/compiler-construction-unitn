@@ -2,4 +2,11 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Types of LHS and RHS are mismatched. LHS: [Int] RHS: [Array { elem_type: Int }]
+error: mismatched types in assignment
+  --> <input>:3:9
+  |
+2 |     x: int
+  |     ------ `x` was declared with type `int` here
+3 |     x = "Hi"  // string (int[]) assigned to int
+  |         ^^^^ expected `int`, found `int[]`
+  |

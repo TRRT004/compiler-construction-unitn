@@ -111,16 +111,8 @@ pub fn compile(
     let _tcheck_span = span!(Level::INFO, "Typecheck").entered();
 
     let mut typechecker = Typechecker::new();
-    typechecker.typecheck(&ast).map_err(|e| {
-        let msg = match e {
-            crate::typecheck::TypeError::MismatchedTypes { msg, span, .. }
-            | crate::typecheck::TypeError::Generic { msg, span } => {
-                let (line, col) = source_map.get_span_location(&span);
-                format!("Type Error at {}:{}.  {}", line, col, msg)
-            }
-        };
-        anyhow::anyhow!("Typechecking failed: {}", msg)
-    })?;
+    // todo!("Use typecheck_result to print errors with source locations");
+    let _typecheck_result = typechecker.typecheck(&ast);
 
     drop(_tcheck_span);
 

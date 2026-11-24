@@ -29,7 +29,7 @@ impl WtacGen {
         e: &ast::Expression,
     ) -> (Vec<W::Instruction>, W::Value) {
         let (instrs, res) = self.gen_expression(e);
-        let e_ty = self.tchecker.typecheck_expression(e).unwrap();
+        let e_ty = self.tchecker.typecheck_expression(e);
 
         let t = match e_ty {
             Type::Tuple { .. } => Type::Bool, // For Pointer Load
@@ -89,8 +89,7 @@ impl WtacGen {
         let es_ty: Vec<Type> = es
             .iter()
             .map(|e| self.tchecker.typecheck_expression(e))
-            .collect::<Result<_, _>>()
-            .unwrap();
+            .collect();
 
         let elem_ty = match es_ty.as_slice() {
             [] => Type::Int, // Happens for {}. The Unknown Type
@@ -277,12 +276,11 @@ impl WtacGen {
         let (e_instr, e_v) = self.gen_and_convert_expression(e);
         let (e_idx_instr, e_idx_v) = self.gen_and_convert_expression(e_idx);
 
-        let elem_t =
-            if let Type::Array { elem_type } = self.tchecker.typecheck_expression(e).unwrap() {
-                elem_type
-            } else {
-                panic!("Internal Error: This should have array type")
-            };
+        let elem_t = if let Type::Array { elem_type } = self.tchecker.typecheck_expression(e) {
+            elem_type
+        } else {
+            panic!("Internal Error: This should have array type")
+        };
 
         let mut b = InstrBuilder::new(self);
         b.extend(e_idx_instr);
@@ -301,7 +299,7 @@ impl WtacGen {
     fn gen_dot(&mut self, e: &ast::Expression, field: &str) -> (Vec<W::Instruction>, W::Value) {
         let (e_instr, e_v) = self.gen_expression(e);
 
-        let member = match self.tchecker.typecheck_expression(e).unwrap() {
+        let member = match self.tchecker.typecheck_expression(e) {
             Type::Record(rec) => {
                 let rec_entry = self.tchecker.symtab.get_record(&rec);
                 rec_entry.find(field).unwrap()
@@ -364,7 +362,7 @@ impl WtacGen {
         e: &ast::Expression,
     ) -> (Vec<W::Instruction>, W::Value) {
         let (e_instr, v_e) = self.gen_and_convert_expression(e);
-        let e_ty = self.tchecker.typecheck_expression(e).unwrap();
+        let e_ty = self.tchecker.typecheck_expression(e);
 
         let dst = self.make_wtac_var(convert_type(&e_ty));
         let w_op = self.convert_unop(op);

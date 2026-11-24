@@ -6,10 +6,13 @@ mod common;
 fn record_not_mem() {
     let out = common::typecheck_stmt("a : int = p.z");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Field z does not exist in Record Point",
-        span: 10..13,
-    }
+    error: unknown field `z` on record `Point`
+      --> <input>:1:11
+      |
+    1 | a : int = p.z
+      |           ^^^ record `Point` has no field named `z`
+      |
+      = help: available fields are: `x`, `y`
     "#);
 }
 
@@ -17,10 +20,12 @@ fn record_not_mem() {
 fn record_not_mem2() {
     let out = common::typecheck_stmt("a : int = p.x.z");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Expression in Dot has to be Record Type!",
-        span: 10..15,
-    }
+    error: cannot access field `z` on non-record type `int`
+      --> <input>:1:11
+      |
+    1 | a : int = p.x.z
+      |           ^^^ expected a record type, found `int`
+      |
     "#);
 }
 
@@ -41,10 +46,12 @@ fn record_not_mem2() {
 fn record_wrong_init() {
     let out = common::typecheck_stmt("p : Point = Point()");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Number of arguments provided does not fit with function type.\n Function Point Param Type : [Int, Int] and Arguments []",
-        span: 12..19,
-    }
+    error: wrong number of arguments to record `Point`
+      --> <input>:1:13
+      |
+    1 | p : Point = Point()
+      |             ^^^^^^^ expected 2 argument(s), found 0
+      |
     "#);
 }
 #[test]
@@ -57,10 +64,12 @@ fn record_correct_init2() {
 fn record_wrong_assign() {
     let out = common::typecheck_stmt("p.x = true");
     assert_snapshot!(out, @r#"
-    Failure: Generic {
-        msg: "Types of LHS and RHS are mismatched. LHS: [Int] RHS: [Bool]",
-        span: 0..10,
-    }
+    error: mismatched types in assignment
+      --> <input>:1:7
+      |
+    1 | p.x = true
+      |       ^^^^ expected `int`, found `bool`
+      |
     "#);
 }
 
@@ -87,5 +96,6 @@ fn record_correct_assign() {
         env.parser.errors()
     );
     let result = env.tchecker.typecheck_statement(&ast, &types::Type::Bool);
-    assert_snapshot!(format!("{result:?}"), @"Ok(Unit)");
+    assert!(env.tchecker.diagnostics.is_empty());
+    assert_snapshot!(format!("{result:?}"), @"Unit");
 }

@@ -2,4 +2,9 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Initializer has wrong Tuple type. Length does not works. Found (int, int)
+error: mismatched number of values in variable initialization
+  --> <input>:6:14
+  |
+6 |     x: int = getCoords()  // expects 2 vars on LHS
+  |     ------   ^^^^^^^^^^^ expected `int` due to this declaration, expected a single value of type `int`, found `(int, int)`
+  |

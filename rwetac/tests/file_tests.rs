@@ -18,6 +18,7 @@ fn run_invalid_case(src: &str) -> String {
 }
 
 fn run_invalid_case_type(src: &str) -> String {
+    let sm = rwetac::source_map::SourceMap::new(src.to_string());
     let lexer = lexer::Lexer::new(src);
     let mut parser = parser::Parser::new(lexer);
     let mut resolver = resolver::Resolver::new();
@@ -30,13 +31,11 @@ fn run_invalid_case_type(src: &str) -> String {
     }
     match tchecker.typecheck(&ast) {
         Ok(_) => panic!("Typechecking succeeded unexpectedly"),
-        Err(e) => {
-            let msg = match e {
-                typecheck::TypeError::MismatchedTypes { msg, .. } => msg,
-                typecheck::TypeError::Generic { msg, .. } => msg,
-            };
-            format!("Failure: {}", msg)
-        }
+        Err(diags) => diags
+            .iter()
+            .map(|d| d.render(&sm, None, false))
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 

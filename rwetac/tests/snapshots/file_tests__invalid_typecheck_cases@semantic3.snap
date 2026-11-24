@@ -2,4 +2,11 @@
 source: rwetac/tests/file_tests.rs
 expression: out
 ---
-Failure: Return has wrong type!. Number of types do not match. Found [Int, Int]
+error: wrong number of return values
+  --> <input>:2:5
+  |
+1 | f(): int {
+  | - function declared to return `(int)` here
+2 |     return 1, 2  // too many return values
+  |     ^^^^^^ expected 1 return value(s), found 2
+  |

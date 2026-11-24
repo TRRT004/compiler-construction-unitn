@@ -58,8 +58,7 @@ impl WtacGen {
         let es_ty: Vec<_> = es
             .iter()
             .map(|e| self.tchecker.typecheck_expression(e))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+            .collect();
         debug!("In return: {:?}", es_ty);
         let es_ty_unfolded = Typechecker::unfold_tuple_types(es_ty);
         // If return is a functoin call, it contains a tuple type. Evefn if only one value
@@ -91,7 +90,7 @@ impl WtacGen {
             let mut offset = 0;
             for e in es {
                 let (instr_e, res_e) = self.gen_and_convert_expression(e);
-                let e_ty = self.tchecker.typecheck_expression(e).unwrap();
+                let e_ty = self.tchecker.typecheck_expression(e);
                 // BEcause of function calls here we generalize
                 // Functoin calls always return a tuple! SO we check what we copy
                 // If its tuple with elems >= 2 or record its a pointer and the call site handles it later
@@ -250,14 +249,14 @@ impl WtacGen {
             .unzip();
         let rhs_ty: Vec<Type> = rhs
             .iter()
-            .map(|e| self.tchecker.typecheck_expression(e).unwrap())
+            .map(|e| self.tchecker.typecheck_expression(e))
             .collect();
         debug!("LHS: {:?}", lhs);
         debug!("RHS: {:?}", rhs);
         // This typecheck adds a declaration again in Symbol Table. But is not a problem
         let lhs_ty: Vec<Type> = lhs
             .iter()
-            .map(|lval| self.tchecker.typecheck_lval(lval).unwrap())
+            .map(|lval| self.tchecker.typecheck_lval(lval))
             .collect();
         let (instr_lhs, res_lhs): (Vec<Vec<_>>, Vec<_>) =
             lhs.iter().map(|l| self.gen_lval(l)).unzip();
