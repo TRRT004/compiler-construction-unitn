@@ -13,12 +13,13 @@ fi
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
-# 1. Copy rwetac and architecture.md (referenced by rwetac/src/lib.rs via include_str!)
-cp -a "$REPO_ROOT/rwetac" "$STAGE_DIR/rwetac"
-cp -a "$REPO_ROOT/architecture.md" "$STAGE_DIR/architecture.md"
+A1_COMMIT="8df0e6a"
 
-# 2. Copy Cargo.lock and create a root Cargo.toml with run_examples as the root binary package
-cp -a "$REPO_ROOT/Cargo.lock" "$STAGE_DIR/Cargo.lock"
+# 1. Extract A1-only rwetac, architecture.md (referenced by rwetac/src/lib.rs via include_str!), and Cargo.lock
+# (avoids including A2 changes made to rwetac and Cargo.lock in the working tree)
+git -C "$REPO_ROOT" archive "$A1_COMMIT" rwetac architecture.md Cargo.lock | tar -x -C "$STAGE_DIR"
+
+# 2. Create a root Cargo.toml with run_examples as the root binary package
 cat > "$STAGE_DIR/Cargo.toml" << 'EOF'
 [package]
 name = "run_examples"

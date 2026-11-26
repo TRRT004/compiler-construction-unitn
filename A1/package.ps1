@@ -19,12 +19,19 @@ $StageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("a1_stage_" + [System.I
 New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
 try {
-    # 1. Copy rwetac and architecture.md (referenced by rwetac/src/lib.rs via include_str!)
-    Copy-Item -Path (Join-Path $RepoRoot "rwetac") -Destination (Join-Path $StageDir "rwetac") -Recurse -Force
-    Copy-Item -Path (Join-Path $RepoRoot "architecture.md") -Destination (Join-Path $StageDir "architecture.md") -Force
+    $A1Commit = "8df0e6a"
 
-    # 2. Copy Cargo.lock and create a root Cargo.toml with run_examples as the root binary package
-    Copy-Item -Path (Join-Path $RepoRoot "Cargo.lock") -Destination (Join-Path $StageDir "Cargo.lock") -Force
+    # 1. Extract A1-only rwetac, architecture.md (referenced by rwetac/src/lib.rs via include_str!), and Cargo.lock
+    # (avoids including A2 changes made to rwetac and Cargo.lock in the working tree)
+    $A1ArchiveZip = Join-Path $StageDir "_a1_base.zip"
+    & git -C $RepoRoot archive --format=zip --output=$A1ArchiveZip $A1Commit rwetac architecture.md Cargo.lock
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to extract A1 files from git commit $A1Commit"
+    }
+    Expand-Archive -Path $A1ArchiveZip -DestinationPath $StageDir -Force
+    Remove-Item -Path $A1ArchiveZip -Force
+
+    # 2. Create a root Cargo.toml with run_examples as the root binary package
 
     $CargoToml = @"
 [package]
