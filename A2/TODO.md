@@ -4,7 +4,7 @@
 - [x] Edit `parser.rs` to return multiple errors.
 - [x] Edit `resolver.rs` to accumulate errors.
 - [] Generate 3 broken programs.
-- [] Do point 2 and 3 of `A2.md`
+- [x] Do point 2 and 3 of `A2.md`
 
 # Jacopo
 - [] Generate 4 broken programs.

@@ -1,6 +1,7 @@
 [workspace]
 members = [ 
     "A1",
+    "A2",
     "demos/4.3-lexing",
     "intro",
     "runtime",

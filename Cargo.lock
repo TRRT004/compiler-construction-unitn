@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "a2_diagnostics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rwetac",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

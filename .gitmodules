@@ -1,0 +1,4 @@
+[submodule "A2/original_repo"]
+	path = A2/original_repo
+	url = https://github.com/TRRT004/compiler-construction-unitn.git
+	branch = main
