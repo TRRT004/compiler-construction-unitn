@@ -3,10 +3,10 @@ source: rwetac/tests/file_tests.rs
 expression: out
 ---
 error: unexpected token
-  --> <input>:5:16
+  --> <input>:5:15
   |
 5 |     return f(1
-  |                ^ expected RParen, found Semicolon
+  |               ^ expected RParen, found Semicolon
   |
   = help: Note: the line break here was turned into a statement separator, so this `;` is not in the source. If this line was meant to continue the previous one, end the previous line with the operator or comma
 

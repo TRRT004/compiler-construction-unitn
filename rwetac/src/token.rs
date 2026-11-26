@@ -38,7 +38,7 @@ impl fmt::Display for LexicalError {
 /// used by the [`Lexer`](crate::lexer::Lexer) for automatic semicolon insertion
 /// and never reach the parser.
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t\f\r]+")] // Ignore this regex pattern between tokens
+#[logos(skip r"[ \t\f]+")] // Ignore this regex pattern between tokens
 pub enum Token {
     /// An identifier or variable name,
     #[regex("[_a-zA-Z][_0-9a-zA-Z]*", |lex| lex.slice().to_string())]
@@ -136,7 +136,7 @@ pub enum Token {
     #[token("false")]
     False,
     // Easier for Semicolon Insertion
-    #[regex(r"\n+")]
+    #[regex(r"(\r?\n)+")]
     Newline,
     #[end]
     Eof,
@@ -181,5 +181,13 @@ mod tests {
     fn test_string_with_unicode_escape() {
         let tok = lex_one(r#""\u0041""#); // 'A'
         assert_eq!(tok, Token::StringLiteral("A".into()));
+    }
+
+    #[test]
+    fn test_newline_lf_and_crlf_start_at_same_offset() {
+        let lf: Vec<_> = Token::lexer("a\nb").spanned().collect();
+        let crlf: Vec<_> = Token::lexer("a\r\nb").spanned().collect();
+        assert_eq!(lf[1], (Ok(Token::Newline), 1..2));
+        assert_eq!(crlf[1], (Ok(Token::Newline), 1..3));
     }
 }
