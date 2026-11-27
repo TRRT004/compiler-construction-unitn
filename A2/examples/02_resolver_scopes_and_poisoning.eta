@@ -1,0 +1,23 @@
+// Demonstrates resolver error accumulation and AST poisoning.
+// BEFORE aborts on the very first duplicate parameter; AFTER collects all duplicate
+// declarations and undefined identifiers while poisoning broken nodes so typechecking
+// neither panics nor emits cascading ghost errors.
+
+compute(x: int, x: int): int {
+    acc: int = x * 2
+    acc: int = 10
+
+    offset: int = missing_bias + 1
+    norm: int = unknown_fn(acc, missing_arg)
+    log_result(ghost_value)
+
+    return acc + offset + norm
+}
+
+compute(): int {
+    return 0
+}
+
+bad_return(flag: bool): int {
+    return flag
+}

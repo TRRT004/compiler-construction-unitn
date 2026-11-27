@@ -1,0 +1,30 @@
+// Demonstrates multi-error typechecking, secondary declaration spans, help suggestions,
+// and Type::Error poisoning across records, arrays, calls, and control flow.
+
+record Rect {
+    width: int
+    height: int
+}
+
+log_area(a: int) {
+}
+
+area(r: Rect): int {
+    return r.width * r.height
+}
+
+inspect(r: Rect, count: int): int {
+    bad_field: int = r.depth
+    ignored: int = log_area(count)
+    area(r)
+
+    scores: int[] = {10, 20, 30}
+    flag: bool = true
+    picked: int = scores[flag] + 5
+
+    poisoned: int = (1 + true) * 2
+
+    if count {
+        return picked + poisoned + bad_field + ignored
+    }
+}

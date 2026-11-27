@@ -1,0 +1,25 @@
+// Demonstrates parser error recovery, ASI diagnostics, and downstream semantic checking.
+// BEFORE stops at the first syntax error on line 5; AFTER recovers across record members,
+// malformed statements, ASI line breaks, and continues to resolution and typechecking.
+
+record Sample {
+    count int
+    limit: int
+}
+
+process(a: int, b: int): int {
+    total: int = a
+        + b
+
+    broken: int = 1 + * 2
+
+    if total {
+        return total
+    }
+
+    return 0
+}
+
+check_bounds(x: int): int {
+    return x + true
+}
