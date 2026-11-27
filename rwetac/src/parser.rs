@@ -673,7 +673,10 @@ impl<'a> Parser<'a> {
                                     }
                                     _ => (None, vd.span.clone()),
                                 };
-                                let Some(_) = self.expect(Token::Semicolon) else {
+                                let Some(_) = Some(()).filter(|_| {
+                                    let had_err = init.as_ref().is_some_and(Self::expr_contains_error);
+                                    self.consume_stmt_end(had_err)
+                                }) else {
                                     return Statement {
                                         kind: StatementKind::Error,
                                         span: self.peek_span(),
@@ -714,12 +717,13 @@ impl<'a> Parser<'a> {
                                     span: self.peek_span(),
                                 };
                             }
-                            let Some(_) = self.expect(Token::Semicolon) else {
+                            let rhs_had_error = rhs.iter().any(Self::expr_contains_error);
+                            if !self.consume_stmt_end(rhs_had_error) {
                                 return Statement {
                                     kind: StatementKind::Error,
                                     span: self.peek_span(),
                                 };
-                            };
+                            }
                             let span_start = lvals
                                 .first()
                                 .map(|l| l.span())
@@ -802,12 +806,13 @@ impl<'a> Parser<'a> {
         };
         // Relies on Semicolon
         let es = self.parse_sep_list_comma(Token::Semicolon, |p| p.parse_expression(0));
-        let Some(_) = self.expect(Token::Semicolon) else {
+        let had_err = es.iter().any(Self::expr_contains_error);
+        if !self.consume_stmt_end(had_err) {
             return Statement {
                 kind: StatementKind::Error,
                 span: self.peek_span(),
             };
-        };
+        }
         let kind = StatementKind::Return(es);
         Statement {
             kind,
@@ -865,18 +870,26 @@ impl<'a> Parser<'a> {
             };
         };
         let args = self.parse_sep_list_comma(Token::RParen, |p| p.parse_expression(0));
-        let Some(span_end) = self.expect(Token::RParen) else {
+        let args_had_error = args.iter().any(Self::expr_contains_error);
+        let span_end = if *self.peek() == Token::RParen {
+            self.consume().1
+        } else if args_had_error {
+            self.syncronize_paren_or_stmt()
+        } else {
+            let Some(span_end) = self.expect(Token::RParen) else {
+                return Statement {
+                    kind: StatementKind::Error,
+                    span: self.peek_span(),
+                };
+            };
+            span_end
+        };
+        if !self.consume_stmt_end(args_had_error) {
             return Statement {
                 kind: StatementKind::Error,
                 span: self.peek_span(),
             };
-        };
-        let Some(_) = self.expect(Token::Semicolon) else {
-            return Statement {
-                kind: StatementKind::Error,
-                span: self.peek_span(),
-            };
-        };
+        }
         let kind = StatementKind::Procedure { name, args };
         Statement {
             kind,
@@ -1477,6 +1490,23 @@ impl<'a> Parser<'a> {
                 span,
             };
         }
+        if matches!(
+            self.peek(),
+            Token::Semicolon | Token::RBrace | Token::RParen | Token::RBrack | Token::Comma
+        ) {
+            let found = self.peek().clone();
+            let span = self.peek_span();
+            self.push_error(
+                span.clone(),
+                &found,
+                "unexpected token in expression",
+                format!("expected expression, found {:?}", found),
+            );
+            return Expression {
+                kind: ExpressionKind::Error,
+                span,
+            };
+        }
         let (tok, span_tok) = self.consume();
         let (kind, span) = match tok {
             Token::Int(num) => (ExpressionKind::Int(num), span_tok),
@@ -1485,13 +1515,24 @@ impl<'a> Parser<'a> {
             Token::False => (ExpressionKind::Bool(false), span_tok),
             Token::LParen => {
                 let expr = self.parse_expression(0);
-                let Some(span_rparen) = self.expect(Token::RParen) else {
+                if *self.peek() == Token::RParen {
+                    let span_rparen = self.consume().1;
+                    (expr.kind, span_tok.merge(&span_rparen))
+                } else if Self::expr_contains_error(&expr) {
+                    let end_span = self.syncronize_paren_or_stmt();
                     return Expression {
                         kind: ExpressionKind::Error,
-                        span: expr.span.clone(),
+                        span: span_tok.merge(&end_span),
                     };
-                };
-                (expr.kind, span_tok.merge(&span_rparen))
+                } else {
+                    let Some(span_rparen) = self.expect(Token::RParen) else {
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            span: expr.span.clone(),
+                        };
+                    };
+                    (expr.kind, span_tok.merge(&span_rparen))
+                }
             }
             Token::LBrace => {
                 let expr = self.parse_array_literal();
@@ -1529,6 +1570,58 @@ impl<'a> Parser<'a> {
             kind: ExpressionKind::ArrayLit(elems),
             span: span_end,
         }
+    }
+
+    /// Returns `true` if `expr` or any of its subexpressions is [`ExpressionKind::Error`].
+    fn expr_contains_error(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExpressionKind::Error => true,
+            ExpressionKind::ArrayLit(elems) => elems.iter().any(Self::expr_contains_error),
+            ExpressionKind::Binary(_, l, r) | ExpressionKind::Subscript(l, r) => {
+                Self::expr_contains_error(l) || Self::expr_contains_error(r)
+            }
+            ExpressionKind::Unary(_, e) | ExpressionKind::Dot(e, _) => {
+                Self::expr_contains_error(e)
+            }
+            ExpressionKind::Call { args, .. } => args.iter().any(Self::expr_contains_error),
+            ExpressionKind::Var(_) | ExpressionKind::Int(_) | ExpressionKind::Bool(_) => false,
+        }
+    }
+
+    /// Consumes a statement's terminating `;`. If an expression inside the
+    /// statement already errored, skips any leftover tokens up to `;` silently
+    /// so we don't emit a cascaded `expected Semicolon` error.
+    fn consume_stmt_end(&mut self, expr_had_error: bool) -> bool {
+        if *self.peek() == Token::Semicolon {
+            self.consume();
+            return true;
+        }
+        if expr_had_error {
+            self.syncronize_stmt(0);
+            return true;
+        }
+        self.expect(Token::Semicolon).is_some()
+    }
+
+    /// Advances past leftover tokens after a broken expression inside `(...)`
+    /// until the matching `)` (consumed) or a statement boundary (`;`/`}`/EOF,
+    /// left unconsumed).
+    fn syncronize_paren_or_stmt(&mut self) -> Span {
+        let mut last_span = self.peek_span();
+        while !self.is_eof() {
+            match self.peek() {
+                Token::RParen => {
+                    return self.consume().1;
+                }
+                Token::Semicolon | Token::RBrace => {
+                    return last_span;
+                }
+                _ => {
+                    last_span = self.consume().1;
+                }
+            }
+        }
+        last_span
     }
 
     /// Parses a string literal into an array of integer character codes.
@@ -1645,6 +1738,19 @@ mod tests {
             }
             other => panic!("expected RecordDecl, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn broken_expression_in_stmt_emits_single_error() {
+        let (prog, errs1) = parse_src("main(): int {\n    broken: int = 1 + * 2\n    return broken\n}\n");
+        assert_eq!(errs1.len(), 1, "got {errs1:?}");
+        assert_eq!(prog.decls.len(), 1);
+
+        let (_prog2, errs2) = parse_src("main(): int {\n    broken: int = (1 + * 2)\n    return 0\n}\n");
+        assert_eq!(errs2.len(), 1, "got {errs2:?}");
+
+        let (_prog3, errs3) = parse_src("main(): int {\n    broken: int = 1 +\n    return 0\n}\n");
+        assert_eq!(errs3.len(), 1, "got {errs3:?}");
     }
 
     #[test]

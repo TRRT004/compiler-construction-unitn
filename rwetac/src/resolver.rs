@@ -33,6 +33,7 @@ use crate::ast::*;
 pub struct IdEntry {
     unique_name: String,
     global: bool,
+    decl_span: Option<Span>,
 }
 
 /// A stack of hash maps that mirrors the lexical scope structure of the program.
@@ -185,6 +186,23 @@ impl Resolver {
         self.errors.push(diag);
     }
 
+    /// Records a duplicate-declaration [`Diagnostic`] with an optional secondary
+    /// span pointing to the earlier declaration.
+    fn push_duplicate_error(
+        &mut self,
+        span: Span,
+        prev_span: Option<Span>,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        prev_label: impl Into<String>,
+    ) {
+        let mut diag = Diagnostic::error_with_label(span, message, label);
+        if let Some(prev) = prev_span {
+            diag = diag.with_secondary(prev, prev_label);
+        }
+        self.errors.push(diag);
+    }
+
     /// Resolves all names in a program, mutating the AST in place.
     ///
     /// Top-level functions and records are registered first (so they can
@@ -198,6 +216,7 @@ impl Resolver {
             IdEntry {
                 unique_name: "length".to_string(),
                 global: true,
+                decl_span: None,
             },
         );
         p.decls
@@ -213,11 +232,14 @@ impl Resolver {
         match decl {
             Declaration::Global(_) => (),
             Declaration::FunDecl(fun) => match self.scope_map.find(&fun.name) {
-                Some(_) => {
-                    self.push_error(
+                Some(existing) => {
+                    let prev_span = existing.decl_span.clone();
+                    self.push_duplicate_error(
                         fun.span.clone(),
+                        prev_span,
                         format!("Function {} was already defined", fun.name),
                         "Function already defined",
+                        format!("`{}` was previously defined here", fun.name),
                     );
                     *decl = Declaration::Error;
                 }
@@ -226,15 +248,19 @@ impl Resolver {
                     IdEntry {
                         unique_name: fun.name.clone(),
                         global: true,
+                        decl_span: Some(fun.span.clone()),
                     },
                 ),
             },
             Declaration::RecordDecl(record) => match self.scope_map.find(&record.tag) {
-                Some(_) => {
-                    self.push_error(
+                Some(existing) => {
+                    let prev_span = existing.decl_span.clone();
+                    self.push_duplicate_error(
                         record.span.clone(),
+                        prev_span,
                         format!("Record {} was already defined", record.tag),
                         "Record already defined",
+                        format!("`{}` was previously defined here", record.tag),
                     );
                     *decl = Declaration::Error;
                 }
@@ -243,6 +269,7 @@ impl Resolver {
                     IdEntry {
                         unique_name: record.tag.clone(),
                         global: true,
+                        decl_span: Some(record.span.clone()),
                     },
                 ),
             },
@@ -255,10 +282,13 @@ impl Resolver {
         match decl {
             Declaration::Global(vd) => match self.scope_map.find_curr(&vd.name) {
                 Some(entry) => {
-                    self.push_error(
+                    let prev_span = entry.decl_span.clone();
+                    self.push_duplicate_error(
                         vd.span.clone(),
-                        format!("Global {} already exists! Entry: {:?}", vd.name, entry),
+                        prev_span,
+                        format!("Global {} already exists!", vd.name),
                         "Global variable already exists",
+                        format!("`{}` was previously declared here", vd.name),
                     );
                     *decl = Declaration::Error;
                 }
@@ -267,6 +297,7 @@ impl Resolver {
                     IdEntry {
                         unique_name: vd.name.clone(),
                         global: true,
+                        decl_span: Some(vd.span.clone()),
                     },
                 ),
             },
@@ -279,9 +310,10 @@ impl Resolver {
     /// Resolves a function: opens a new scope, renames parameters, then resolves the body.
     pub fn resolve_function(&mut self, fun: &mut Function) {
         self.scope_map.push();
-        for p in &mut fun.params {
+        for (p, p_span) in fun.params.iter_mut().zip(fun.param_spans.iter()) {
             if let Some(name) = p.take() {
-                *p = self.add_local_var(&name, &fun.span);
+                let span = p_span.as_ref().unwrap_or(&fun.span);
+                *p = self.add_local_var(&name, span);
             }
         }
         self.scope_map.push(); // Scope for body
@@ -306,8 +338,15 @@ impl Resolver {
     /// Returns the unique name if successful, or `None` if the variable already exists in the current scope.
     fn add_local_var(&mut self, name: &str, span: &logos::Span) -> Option<String> {
         // Check if var is already defined
-        if self.scope_map.find_curr(name).is_some() {
-            self.push_error(span.clone(), format!("Duplicate Variable {} found!", name), "Variable already exists");
+        if let Some(existing) = self.scope_map.find_curr(name) {
+            let prev_span = existing.decl_span.clone();
+            self.push_duplicate_error(
+                span.clone(),
+                prev_span,
+                format!("Duplicate Variable {} found!", name),
+                "Variable already exists",
+                format!("`{name}` was previously declared here"),
+            );
             return None;
         }
 
@@ -318,6 +357,7 @@ impl Resolver {
             IdEntry {
                 unique_name: unique_name.clone(),
                 global: false,
+                decl_span: Some(span.clone()),
             },
         );
         Some(unique_name)
@@ -538,8 +578,14 @@ mod tests {
                 return 0
             }",
         );
-        // Duplicate param x, duplicate local y, undefined missing_init, duplicate local y in multi-assign, duplicate function f.
+        // Duplicate function f (pass 1), duplicate param x, undefined missing_init, duplicate local y, duplicate local y in multi-assign.
         assert_eq!(errors.len(), 5, "errors: {errors:?}");
+        // Every duplicate declaration diagnostic should carry a secondary span to the original declaration.
+        assert_eq!(errors[0].secondary.len(), 1); // duplicate function f
+        assert_eq!(errors[1].secondary.len(), 1); // duplicate param x
+        assert_eq!(errors[2].secondary.len(), 0); // undefined missing_init
+        assert_eq!(errors[3].secondary.len(), 1); // duplicate local y
+        assert_eq!(errors[4].secondary.len(), 1); // duplicate local y in multi-assign
         assert!(matches!(prog.decls[1], Declaration::Error));
         let Declaration::FunDecl(fun) = &prog.decls[0] else {
             panic!("expected function");
